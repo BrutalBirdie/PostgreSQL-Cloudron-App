@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"pgpanel/internal/store"
 )
 
 // reporter stores the progress of the running job. pct is -1 when the total is
@@ -216,14 +218,83 @@ func (w *Worker) restoreArchive(ctx context.Context, file string, args ...string
 		"pg_restore", append(append([]string{"--verbose"}, args...), file)...)
 }
 
-// dumpDatabase runs pg_dump and reports the bytes written so far.
-func (w *Worker) dumpDatabase(ctx context.Context, step, out string, args ...string) error {
+// dumpDatabase runs pg_dump and reports an estimated percentage: the heap
+// size of the tables already copied plus the copied share of the current
+// table, over the heap size of all tables. pg_dump copies one table at a time.
+func (w *Worker) dumpDatabase(ctx context.Context, database, step, out string, args ...string) error {
 	report(ctx, -1, step)
+	sizes, err := w.store.TableSizes(ctx, database)
+	if err != nil {
+		w.log.Warn("no size estimate for the dump", "database", database, "err", err)
+	}
+	est := newDumpEstimate(sizes)
 	return w.tracked(ctx, nil,
 		func(int) {
+			written := ""
 			if info, err := os.Stat(out); err == nil {
-				report(ctx, -1, step+": "+humanBytes(info.Size())+" written")
+				written = ", " + humanBytes(info.Size()) + " written"
+			}
+			cp, err := w.store.DumpCopyProgress(ctx, database)
+			if err != nil {
+				w.log.Warn("reading copy progress", "database", database, "err", err)
+			}
+			pct, table := est.update(cp)
+			if table != "" {
+				report(ctx, pct, step+": table "+table+written)
+			} else {
+				report(ctx, pct, step+written)
 			}
 		},
 		"pg_dump", append(args, "--file="+out)...)
+}
+
+type dumpEstimate struct {
+	sizes   map[uint32]store.TableSize
+	total   int64
+	done    int64
+	current uint32
+	seen    map[uint32]bool
+	last    int
+}
+
+func newDumpEstimate(sizes map[uint32]store.TableSize) *dumpEstimate {
+	e := &dumpEstimate{sizes: sizes, seen: map[uint32]bool{}, last: -1}
+	for _, t := range sizes {
+		e.total += t.Bytes
+	}
+	return e
+}
+
+// update returns the percent (-1 when there is no estimate, never above 99
+// while pg_dump runs, never going backwards) and the table being copied.
+func (e *dumpEstimate) update(cp *store.CopyProgress) (int, string) {
+	if e.total <= 0 {
+		return -1, ""
+	}
+	var current int64
+	table := ""
+	if cp != nil {
+		if cp.Relid != e.current {
+			if t, ok := e.sizes[e.current]; ok && !e.seen[e.current] {
+				e.done += t.Bytes
+				e.seen[e.current] = true
+			}
+			e.current = cp.Relid
+		}
+		if t, ok := e.sizes[cp.Relid]; ok {
+			table = t.Name
+			share := 0.0
+			switch {
+			case t.EstRows > 0:
+				share = float64(cp.Tuples) / t.EstRows
+			case t.Bytes > 0:
+				share = float64(cp.Bytes) / float64(t.Bytes)
+			}
+			current = int64(min(share, 1) * float64(t.Bytes))
+		}
+	}
+	pct := min(percent(e.done+current, e.total), 99)
+	pct = max(pct, e.last, 0)
+	e.last = pct
+	return pct, table
 }

@@ -41,4 +41,5 @@
 * Optional checksum from where the dump was made, also for files copied with the File Manager
 * The worker checks the SHA-256 again before importing and refuses files that changed
 * Snapshots, restores and imports show their progress: current step and, while loading, how much of the dump has been read
+* Snapshots show an estimated percentage and the table being copied, from the table sizes and pg_stat_progress_copy
 * Restores and imports load into a new database and switch over at the end. The current database stays online and unchanged until then, a failed all-or-nothing import changes nothing

@@ -163,7 +163,7 @@ func (w *Worker) snapshot(ctx context.Context, db *store.Database, by, kind, not
 	if kind == store.KindPreRestore {
 		step = "Taking a safety snapshot of the current data"
 	}
-	if err := w.dumpDatabase(ctx, step, tmp, "--format=custom", "--no-owner", "--no-acl",
+	if err := w.dumpDatabase(ctx, db.Name, step, tmp, "--format=custom", "--no-owner", "--no-acl",
 		"--host="+w.cfg.SocketDir, "--username="+db.Owner, "--dbname="+db.Name); err != nil {
 		return 0, err
 	}

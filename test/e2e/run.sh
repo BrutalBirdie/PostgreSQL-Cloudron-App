@@ -160,7 +160,9 @@ steps=$(docker logs "${app}" 2>&1 | grep '"msg":"job step","id":'"${import_job}"
 steps_pattern='^Checking the SHA-256 of the file>Taking a safety snapshot of the current data>Creating a new database to load into, the current one stays online>Starting pg_restore>.*Processing data for table "public.big">.*Creating INDEX "public.big_payload">Switching to the new database$'
 expect "import steps logged in order" "${steps_pattern}" "${steps}"
 expect "big import restored all rows" "^3000000$" "$(pg "${new_pw}" e2e_bob e2e_bob 'select count(*) from big')"
+browser bigSnapshot
 expect "progress recorded for the finished job" "Switching to the new database" "$(superuser "select progress_step from jobs where kind = 'import' order by id desc limit 1" pgpanel)"
+pg "${new_pw}" e2e_bob e2e_bob 'drop table big' >/dev/null
 
 # a dump that needs an extension tenants may not create fails in all-or-nothing mode
 superuser "create database e2e_extsrc" >/dev/null
@@ -171,7 +173,6 @@ superuser "drop database e2e_extsrc" >/dev/null
 browser failedImport
 expect "failed import left the data unchanged" "^from dump$" "$(pg "${new_pw}" e2e_bob e2e_bob 'select v from imported_marker')"
 expect "failed import left no staging database" "^0$" "$(superuser "select count(*) from pg_database where datname like 'pgpanel\_%'")"
-pg "${new_pw}" e2e_bob e2e_bob 'drop table big' >/dev/null
 expect "import loaded the dump" "^from dump$" "$(pg "${new_pw}" e2e_bob e2e_bob 'select v from imported_marker')"
 expect "imported objects owned by bob" "^e2e_bob$" "$(pg "${new_pw}" e2e_bob e2e_bob "select tableowner from pg_tables where tablename = 'imported_marker'")"
 expect "plain SQL never executed" "^no$" "$(docker exec "${app}" bash -c 'test -e /tmp/pwned && echo yes || echo no')"

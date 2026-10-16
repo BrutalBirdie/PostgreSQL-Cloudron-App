@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"pgpanel/internal/store"
 )
 
 func TestFilePosition(t *testing.T) {
@@ -64,5 +66,34 @@ func TestHashWithProgress(t *testing.T) {
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" {
 		t.Fatalf("got %s", got)
+	}
+}
+
+func TestDumpEstimate(t *testing.T) {
+	e := newDumpEstimate(map[uint32]store.TableSize{
+		1: {Name: "public.small", Bytes: 100, EstRows: 10},
+		2: {Name: "public.big", Bytes: 900, EstRows: 90},
+		3: {Name: "public.new", Bytes: 0, EstRows: -1},
+	})
+	steps := []struct {
+		cp    *store.CopyProgress
+		pct   int
+		table string
+	}{
+		{nil, 0, ""},
+		{&store.CopyProgress{Relid: 1, Tuples: 5}, 5, "public.small"},
+		{&store.CopyProgress{Relid: 2, Tuples: 45}, 55, "public.big"},
+		{&store.CopyProgress{Relid: 2, Tuples: 900}, 99, "public.big"}, // stale reltuples, capped
+		{nil, 99, ""}, // between tables, never backwards
+		{&store.CopyProgress{Relid: 3, Bytes: 50}, 99, "public.new"},
+	}
+	for i, s := range steps {
+		pct, table := e.update(s.cp)
+		if pct != s.pct || table != s.table {
+			t.Errorf("step %d: got %d %q want %d %q", i, pct, table, s.pct, s.table)
+		}
+	}
+	if pct, _ := newDumpEstimate(nil).update(nil); pct != -1 {
+		t.Errorf("no sizes: got %d want -1", pct)
 	}
 }

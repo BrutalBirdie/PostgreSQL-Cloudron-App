@@ -339,6 +339,29 @@ const steps = {
         await save();
     },
 
+    async bigSnapshot() {
+        const { page, save } = await session('bob');
+        await page.goto(BASE + '/databases/e2e_bob');
+        await page.click('text=Create snapshot now');
+        const steps = new Set();
+        const percents = [];
+        for (let i = 0; i < 240; i++) {
+            await page.goto(BASE + '/databases/e2e_bob');
+            const banner = page.locator('.job-progress');
+            if (!(await banner.count())) break;
+            steps.add((await banner.locator('span').first().textContent()).replace(/, [0-9.]+ [KMG]?i?B written/, '').replace(/ \(\d+%\)$/, ''));
+            const bar = banner.locator('progress');
+            if (await bar.count()) percents.push(Number(await bar.getAttribute('value')));
+            await page.waitForTimeout(250);
+        }
+        console.log('       seen steps:', [...steps].join(' | '));
+        console.log('       seen percents:', percents.join(','));
+        check('snapshot shows the table being copied', [...steps].some((s) => s.includes('table public.big')));
+        check('snapshot progress bar moved', percents.some((p) => p > 0 && p < 100));
+        check('snapshot progress never goes backwards', percents.every((p, i) => i === 0 || p >= percents[i - 1]), percents.join(','));
+        await save();
+    },
+
     async failedImport() {
         const { page, save } = await session('bob');
         await page.goto(BASE + '/roles/e2e_bob/uploads');
