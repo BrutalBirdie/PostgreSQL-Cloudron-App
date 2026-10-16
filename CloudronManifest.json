@@ -6,7 +6,7 @@
   "tagline": "Standalone PostgreSQL server reachable from external hosts",
   "version": "1.0.0",
   "upstreamVersion": "18.6",
-  "minBoxVersion": "9.2.0",
+  "minBoxVersion": "10.0.0",
   "website": "https://www.postgresql.org/",
   "icon": "file://logo.png",
   "healthCheckPath": "/healthz",
@@ -47,13 +47,14 @@
   "changelog": "file://CHANGELOG",
   "postInstallMessage": "file://POSTINSTALL.md",
   "manifestVersion": 2,
-  "iconUrl": "https://git.cloudron.io/playground/postgresql-app/-/raw/master/logo.png",
-  "packagerName": "Elias Hackradt",
+  "iconUrl": "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/logo.png?raw=true",
+  "packagerName": "James Smith",
   "packagerUrl": "https://git.cloudron.io/playground/postgresql-app",
   "mediaLinks": [
-    "https://git.cloudron.io/playground/postgresql-app/-/raw/master/screenshots/databases.png",
-    "https://git.cloudron.io/playground/postgresql-app/-/raw/master/screenshots/database.png",
-    "https://git.cloudron.io/playground/postgresql-app/-/raw/master/screenshots/admin.png"
+    "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/screenshots/databases.png?raw=true",
+    "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/screenshots/database.png?raw=true",
+    "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/screenshots/admin.png?raw=true"
   ],
-  "contactEmail": "elias@cloudron.io"
+  "contactEmail": "support@cloudron.io",
+  "packageUrl": "https://git.cloudron.io/playground/postgresql-app"
 }
