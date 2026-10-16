@@ -40,8 +40,19 @@
       "tokenSignatureAlgorithm": "RS256"
     }
   },
-  "tags": [],
+  "tags": [
+    "database"
+  ],
   "changelog": "file://CHANGELOG",
   "postInstallMessage": "file://POSTINSTALL.md",
-  "manifestVersion": 2
+  "manifestVersion": 2,
+  "iconUrl": "https://git.cloudron.io/playground/postgresql-app/-/raw/master/logo.png",
+  "packagerName": "Elias Hackradt",
+  "packagerUrl": "https://git.cloudron.io/playground/postgresql-app",
+  "mediaLinks": [
+    "https://git.cloudron.io/playground/postgresql-app/-/raw/master/screenshots/databases.png",
+    "https://git.cloudron.io/playground/postgresql-app/-/raw/master/screenshots/database.png",
+    "https://git.cloudron.io/playground/postgresql-app/-/raw/master/screenshots/admin.png"
+  ],
+  "contactEmail": "elias@cloudron.io"
 }
