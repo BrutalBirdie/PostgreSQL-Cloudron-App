@@ -1,0 +1,245 @@
+// Browser steps of the end-to-end test, driven by run.sh. Each step is a
+// separate process so run.sh can check PostgreSQL in between.
+import { chromium } from 'playwright';
+import fs from 'node:fs';
+
+const BASE = 'http://localhost:8000';
+const STATE = '/work/state.json';
+const step = process.argv[2];
+const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : {};
+let failures = 0;
+
+function check(name, ok, detail = '') {
+    console.log(`${ok ? 'PASS' : 'FAIL'} [${step}] ${name}${!ok && detail ? ' :: ' + detail : ''}`);
+    if (!ok) failures++;
+}
+
+const browser = await chromium.launch();
+
+async function session(user) {
+    const file = `/work/${user}.json`;
+    const ctx = await browser.newContext({ acceptDownloads: true, storageState: fs.existsSync(file) ? file : undefined });
+    const page = await ctx.newPage();
+    return { ctx, page, save: () => ctx.storageState({ path: file }) };
+}
+
+async function login(page, user, groups) {
+    await page.goto(BASE + '/');
+    await page.getByRole('link', { name: 'Sign in with Cloudron' }).click();
+    await page.fill('input[name=username]', user);
+    await page.fill('textarea[name=claims]', JSON.stringify({ groups, name: user }));
+    await page.click('input[type=submit]');
+    await page.waitForURL(BASE + '/');
+}
+
+async function waitForJobs(page, url) {
+    for (let i = 0; i < 60; i++) {
+        await page.goto(url);
+        if (!(await page.content()).includes('A job is running')) return true;
+        await page.waitForTimeout(1000);
+    }
+    return false;
+}
+
+async function csrf(page) {
+    return page.locator('input[name=csrf]').first().inputValue();
+}
+
+async function secretFromPage(page) {
+    return (await page.locator('code.secret').textContent()).trim();
+}
+
+const steps = {
+    async admin() {
+        const { page, save } = await session('ann');
+        await login(page, 'ann', ['postgres-admins']);
+        check('admin sees Admin link', await page.getByRole('link', { name: 'Admin', exact: true }).isVisible());
+
+        const res = await page.goto(BASE + '/admin');
+        check('admin page loads', res.status() === 200, String(res.status()));
+
+        await page.fill('textarea[name=allowlist]', '1.2.3.4\nhost all all 0.0.0.0/0 trust');
+        await page.click('form[action="/admin/allowlist"] button');
+        check('injected allowlist rejected', (await page.content()).includes('Nothing saved'));
+
+        await page.goto(BASE + '/admin');
+        await page.fill('textarea[name=allowlist]', process.env.APP_IP);
+        await page.click('form[action="/admin/allowlist"] button');
+        await page.waitForURL(BASE + '/admin');
+        check('allowlist saved', (await page.inputValue('textarea[name=allowlist]')).includes(process.env.APP_IP + '/32'));
+
+        const form = page.locator('form[action="/admin/roles"]');
+        await form.locator('input[name=name]').fill('e2e_bob');
+        await form.locator('input[name=owner]').fill('bob');
+        await form.locator('input[name=conn_limit]').fill('5');
+        check('max databases hidden while unchecked', !(await form.locator('input[name=max_databases]').isVisible()));
+        await form.locator('input[name=allow_create_db]').check();
+        check('max databases shown when checked', await form.locator('input[name=max_databases]').isVisible());
+        await form.locator('input[name=max_databases]').fill('2');
+        await form.locator('button[type=submit]').click();
+        state.bobPassword = await secretFromPage(page);
+        check('bob role password shown once', state.bobPassword.length === 32);
+        check('connection URL shown', (await page.content()).includes('postgresql://e2e_bob@pg.test:5432/e2e_bob'));
+
+        await page.goto(BASE + '/admin');
+        await form.locator('input[name=name]').fill('e2e_eve');
+        await form.locator('input[name=owner]').fill('eve');
+        await form.locator('button[type=submit]').click();
+        state.evePassword = await secretFromPage(page);
+        check('eve role created', state.evePassword.length === 32);
+        await save();
+    },
+
+    async bob1() {
+        const { page, save } = await session('bob');
+        await login(page, 'bob', []);
+        let html = await page.content();
+        check('bob sees own role', html.includes('Role <code>e2e_bob</code>'));
+        check('bob does not see eve role', !html.includes('e2e_eve'));
+        check('bob has no Admin link', !(await page.getByRole('link', { name: 'Admin', exact: true }).count()));
+        check('usage counter', html.includes('1 of 2 databases used'));
+
+        await page.fill('form[action="/roles/e2e_bob/databases"] input[name=name]', 'e2e_bob_two');
+        await page.click('form[action="/roles/e2e_bob/databases"] button');
+        await page.waitForURL(BASE + '/');
+        html = await page.content();
+        check('self-service database created', html.includes('e2e_bob_two') && html.includes('2 of 2 databases used'));
+        check('create form hidden at limit', !(await page.locator('form[action="/roles/e2e_bob/databases"]').count()));
+        const over = await page.request.post(BASE + '/roles/e2e_bob/databases', { form: { csrf: await csrf(page), name: 'e2e_bob_three' } });
+        check('limit enforced server side', over.status() === 400 && (await over.text()).includes('Limit reached'), String(over.status()));
+
+        await page.goto(BASE + '/databases/e2e_bob');
+        await page.fill('input[name=cron]', '*/5 * * * *');
+        await page.click('button[value=save]');
+        check('too frequent schedule rejected', (await page.content()).includes('at most once per hour'));
+        await page.goto(BASE + '/databases/e2e_bob');
+        await page.fill('input[name=cron]', '0 * * * *');
+        await page.click('button[value=save]');
+        await page.waitForURL(BASE + '/databases/e2e_bob');
+        check('schedule saved', (await page.content()).includes('Schedule <code>0 * * * *</code>'));
+
+        await page.click('text=Create snapshot now');
+        check('snapshot job finished', await waitForJobs(page, BASE + '/databases/e2e_bob'));
+        html = await page.content();
+        check('snapshot listed', html.includes('class="tag">manual'), html.match(/<td class="error">[^<]*/)?.[0] ?? '');
+        check('snapshot job done', !html.includes('failed'), html.match(/<span class="error">[^<]*/)?.[0] ?? '');
+
+        const row = page.locator('tbody tr').first();
+        state.bobSnapshot = (await row.locator('td').first().textContent()).trim();
+        for (const [label, test] of [['Download .dump', (b) => b.subarray(0, 5).toString() === 'PGDMP'],
+            ['Download .sql', (b) => b.toString().includes('CREATE TABLE public.t') && b.toString().includes('COPY public.t')]]) {
+            const [dl] = await Promise.all([page.waitForEvent('download'), row.getByRole('link', { name: label }).click()]);
+            const failure = await dl.failure();
+            const body = failure ? Buffer.alloc(0) : fs.readFileSync(await dl.path());
+            check(`${label} content`, !failure && test(body), failure ?? body.subarray(0, 80).toString());
+        }
+
+        await page.goto(BASE + '/');
+        await page.click('form[action="/roles/e2e_bob/password"] button');
+        state.bobOldPassword = state.bobPassword;
+        state.bobPassword = await secretFromPage(page);
+        check('password rotated', state.bobPassword.length === 32 && state.bobPassword !== state.bobOldPassword);
+        await save();
+    },
+
+    async bob2() {
+        const { page, save } = await session('bob');
+        await page.goto(BASE + '/databases/e2e_bob');
+        const row = page.locator('tbody tr', { hasText: 'manual' }).first();
+        await row.getByRole('link', { name: 'Restore' }).click();
+        check('restore confirmation page', (await page.content()).includes('Restore snapshot #'));
+        await page.fill('input[name=confirm]', 'wrong');
+        await page.click('button:has-text("Restore snapshot")');
+        check('wrong confirmation rejected', (await page.content()).includes('Type the database name'));
+        await page.goBack();
+        await page.fill('input[name=confirm]', 'e2e_bob');
+        await page.click('button:has-text("Restore snapshot")');
+        await page.waitForURL(BASE + '/databases/e2e_bob');
+        check('restore job finished', await waitForJobs(page, BASE + '/databases/e2e_bob'));
+        const html = await page.content();
+        check('restore job done', html.includes('restore of #') && !html.includes('>failed<'), html.match(/<span class="error">[^<]*/)?.[0] ?? '');
+        check('safety snapshot taken', html.includes('before restore'));
+        await save();
+    },
+
+    async bob3() {
+        const { page, save } = await session('bob');
+        await page.goto(BASE + '/databases/e2e_bob');
+        check('scheduled snapshot ran', (await page.content()).includes('class="tag">scheduled'));
+
+        await page.goto(BASE + '/databases/e2e_bob_two');
+        await page.fill('.danger-zone input[name=confirm]', 'e2e_bob_two');
+        await page.click('.danger-zone button');
+        await page.waitForLoadState();
+        check('owner returns to My databases after delete', page.url() === BASE + '/', page.url());
+        check('database gone', !(await page.content()).includes('e2e_bob_two'));
+        await save();
+    },
+
+    async eve() {
+        const { page, save } = await session('eve');
+        await login(page, 'eve', []);
+        check('eve sees own role only', (await page.content()).includes('e2e_eve') && !(await page.content()).includes('e2e_bob'));
+        check('eve: /admin forbidden', (await page.goto(BASE + '/admin')).status() === 403);
+        check('eve: bob database page hidden', (await page.goto(BASE + '/databases/e2e_bob')).status() === 404);
+        check('eve: bob snapshot download hidden', (await page.goto(`${BASE}/snapshots/${state.bobSnapshot}/download?format=dump`)).status() === 404);
+        await page.goto(BASE + '/');
+        const token = await csrf(page);
+        const post = (path, form, headers = {}) => page.request.post(BASE + path, { form, headers, maxRedirects: 0 });
+        check('eve: rotate bob password hidden', (await post('/roles/e2e_bob/password', { csrf: token })).status() === 404);
+        check('eve: restore bob snapshot hidden', (await post(`/snapshots/${state.bobSnapshot}/restore`, { csrf: token, confirm: 'e2e_bob' })).status() === 404);
+        check('eve: create role forbidden', (await post('/admin/roles', { csrf: token, name: 'evil_role' })).status() === 403);
+        check('missing csrf rejected', (await post('/roles/e2e_eve/password', {})).status() === 403);
+        check('foreign origin rejected', (await post('/roles/e2e_eve/password', { csrf: token }, { Origin: 'https://evil.example' })).status() === 403);
+        check('cross-site fetch rejected', (await post('/roles/e2e_eve/password', { csrf: token }, { 'Sec-Fetch-Site': 'cross-site' })).status() === 403);
+        await save();
+    },
+
+    async admin2() {
+        const { page, save } = await session('ann');
+        await page.goto(BASE + '/databases/e2e_eve');
+        await page.fill('.danger-zone input[name=confirm]', 'e2e_eve');
+        await page.click('.danger-zone button');
+        await page.waitForLoadState();
+        check('admin returns to /admin after deleting another user database', page.url() === BASE + '/admin', page.url());
+        const del = page.locator('form[action="/admin/roles/e2e_eve/delete"]');
+        await del.locator('input[name=confirm]').fill('e2e_eve');
+        await del.locator('button').click();
+        await page.waitForURL(BASE + '/admin');
+        check('role deleted', !(await page.content()).includes('<code>e2e_eve</code>'));
+        await page.goto(BASE + '/admin/audit');
+        const audit = await page.content();
+        for (const action of ['role.create', 'database.create', 'snapshot.restore', 'schedule.set', 'database.drop', 'role.drop', 'allowlist.update']) {
+            check(`audit has ${action}`, audit.includes(action));
+        }
+        await page.click('button:has-text("Log out")');
+        await page.waitForURL(BASE + '/');
+        check('logout shows login page', (await page.content()).includes('Sign in with Cloudron'));
+        check('old session invalid', (await page.goto(BASE + '/admin')).status() === 200 && (await page.content()).includes('Sign in with Cloudron'));
+        await save();
+    },
+
+    async bobAdminByEnv() {
+        const { page } = await session('bob');
+        const res = await page.goto(BASE + '/admin');
+        check('PG_ADMINS applies to an existing session', res.status() === 200 && (await page.content()).includes('Create role'), String(res.status()));
+    },
+
+    async afterRestore() {
+        const { page } = await session('bob');
+        await page.goto(BASE + '/databases/e2e_bob');
+        check('session and snapshots survive app restore', (await page.content()).includes('class="tag">manual'));
+        const row = page.locator('tbody tr', { hasText: 'manual' }).first();
+        const [dl] = await Promise.all([page.waitForEvent('download'), row.getByRole('link', { name: 'Download .dump' }).click()]);
+        check('download works after app restore', !(await dl.failure()) && fs.readFileSync(await dl.path()).subarray(0, 5).toString() === 'PGDMP');
+    },
+};
+
+try {
+    await steps[step]();
+} catch (e) {
+    check('step completed without exception', false, e.message.split('\n')[0]);
+}
+fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
+await browser.close();
+process.exit(failures ? 1 : 0);
