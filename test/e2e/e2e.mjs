@@ -244,7 +244,7 @@ const steps = {
             const ctx = await browser.newContext({ storageState: `/work/${user}.json`, viewport: { width: 1280, height: 800 } });
             const page = await ctx.newPage();
             await page.goto(BASE + url);
-            await page.screenshot({ path: `/work/shots/${name}.png` });
+            await page.screenshot({ path: `/work/shots/${name}.png`, fullPage: true });
             await ctx.close();
         }
         check('screenshots written', fs.readdirSync('/work/shots').length === 3);
