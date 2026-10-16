@@ -1,6 +1,7 @@
 #!/bin/bash
 # End-to-end test: fresh install, real browser, mock OIDC, PostgreSQL over TLS,
 # backup and restore. Usage: test/e2e/run.sh   (needs Docker)
+# SCREENSHOTS=1 also writes the store screenshots to screenshots/
 
 set -eu
 
@@ -113,6 +114,12 @@ pg "${new_pw}" e2e_bob e2e_bob 'delete from t; insert into t values (99)' >/dev/
 browser bob2
 expect "restore brings data back" "^1,2,3$" "$(pg "${new_pw}" e2e_bob e2e_bob "select string_agg(x::text, ',' order by x) from t")"
 expect "restored objects owned by bob" "^e2e_bob$" "$(pg "${new_pw}" e2e_bob e2e_bob "select tableowner from pg_tables where tablename = 't'")"
+
+if [[ "${SCREENSHOTS:-}" == "1" ]]; then
+    browser screenshots
+    mkdir -p "${root}/screenshots"
+    cp "${work}/shots/"*.png "${root}/screenshots/"
+fi
 
 superuser "update schedules set next_run = now() - interval '1 minute'" pgpanel >/dev/null
 sleep 8

@@ -162,6 +162,19 @@ const steps = {
         await save();
     },
 
+    // screenshots for the manifest's mediaLinks, only run with SCREENSHOTS=1
+    async screenshots() {
+        fs.mkdirSync('/work/shots', { recursive: true });
+        for (const [user, url, name] of [['bob', '/', 'databases'], ['bob', '/databases/e2e_bob', 'database'], ['ann', '/admin', 'admin']]) {
+            const ctx = await browser.newContext({ storageState: `/work/${user}.json`, viewport: { width: 1280, height: 800 } });
+            const page = await ctx.newPage();
+            await page.goto(BASE + url);
+            await page.screenshot({ path: `/work/shots/${name}.png` });
+            await ctx.close();
+        }
+        check('screenshots written', fs.readdirSync('/work/shots').length === 3);
+    },
+
     async bob3() {
         const { page, save } = await session('bob');
         await page.goto(BASE + '/databases/e2e_bob');

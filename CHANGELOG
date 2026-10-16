@@ -30,3 +30,4 @@
 * Remove partial snapshot files left by an interrupted worker
 * Delete finished snapshot jobs after 30 days
 * Stop the worker from logging errors while waiting for the panel's first migration
+* Fix row borders in the snapshot table

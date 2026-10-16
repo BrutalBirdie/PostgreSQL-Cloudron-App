@@ -47,7 +47,7 @@
       <td>{{.CreatedAt.UTC.Format "2006-01-02 15:04:05"}} <span class="tag">{{if eq .Kind "scheduled"}}scheduled{{else if eq .Kind "pre_restore"}}before restore{{else}}manual{{end}}</span>{{with .Note}}<br><span class="muted">{{.}}</span>{{end}}</td>
       <td>{{bytes .SizeBytes}}</td>
       <td>{{.CreatedBy}}</td>
-      <td class="actions">
+      <td><div class="actions">
         <a class="button secondary" href="/snapshots/{{.ID}}/download?format=dump">Download .dump</a>
         <a class="button secondary" href="/snapshots/{{.ID}}/download?format=sql">Download .sql</a>
         {{if not $.Data.Busy}}<a class="button" href="/snapshots/{{.ID}}/restore">Restore</a>{{end}}
@@ -55,7 +55,7 @@
           <input type="hidden" name="csrf" value="{{$csrf}}">
           <button type="submit" class="secondary">Delete</button>
         </form>
-      </td>
+      </div></td>
     </tr>
     {{else}}
     <tr><td colspan="5">No snapshots yet.</td></tr>

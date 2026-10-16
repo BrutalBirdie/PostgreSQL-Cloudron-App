@@ -42,8 +42,8 @@ dd { margin: 0; }
 .reveal.inline { display: inline-flex; gap: 6px; align-items: center; }
 .reveal:has(input[type=checkbox]:not(:checked)) .when-checked { display: none; }
 button.secondary, .button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
-td.actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-td.actions .button, td.actions button { padding: 4px 10px; font-size: 0.9em; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.actions .button, .actions button { padding: 4px 10px; font-size: 0.9em; }
 .danger-zone { border-color: var(--danger); }
 .danger-zone h2, .danger-zone h1 { color: var(--danger); }
 .danger-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
