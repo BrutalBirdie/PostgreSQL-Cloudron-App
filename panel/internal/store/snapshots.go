@@ -12,40 +12,6 @@ import (
 
 var ErrJobActive = errors.New("another snapshot or restore of this database is still running")
 
-const migrateSnapshots = `
-CREATE TABLE IF NOT EXISTS snapshots (
-    id bigserial PRIMARY KEY,
-    database text NOT NULL,
-    owner_role text NOT NULL,
-    file text NOT NULL,
-    size_bytes bigint NOT NULL,
-    note text NOT NULL DEFAULT '',
-    created_by text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS jobs (
-    id bigserial PRIMARY KEY,
-    kind text NOT NULL CHECK (kind IN ('snapshot', 'restore')),
-    database text NOT NULL,
-    snapshot_id bigint,
-    requested_by text NOT NULL,
-    status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'failed')),
-    error text NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    finished_at timestamptz
-);
-CREATE UNIQUE INDEX IF NOT EXISTS jobs_one_active ON jobs (database) WHERE status IN ('queued', 'running');
-ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'manual';
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS scheduled boolean NOT NULL DEFAULT false;
-CREATE TABLE IF NOT EXISTS schedules (
-    database text PRIMARY KEY,
-    owner_role text NOT NULL,
-    cron text NOT NULL,
-    next_run timestamptz NOT NULL,
-    updated_by text NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now()
-);`
-
 // Snapshot kinds, each kind is rotated separately so frequent scheduled
 // snapshots never push out a manual one.
 const (
@@ -343,23 +309,6 @@ func (s *Store) SwapStaging(ctx context.Context, name string, jobID int64) error
 		return err
 	}
 	_, err = conn.Exec(ctx, fmt.Sprintf(`DROP DATABASE %s WITH (FORCE)`, ident(replaced)))
-	return err
-}
-
-// CheckSnapshotTables reports whether the panel has migrated the snapshot
-// tables. It checks the catalog, so polling it does not log errors.
-func (s *Store) CheckSnapshotTables(ctx context.Context) error {
-	var ready bool
-	err := s.pool.QueryRow(ctx, `
-SELECT to_regclass('public.schedules') IS NOT NULL
-   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'snapshots' AND column_name = 'kind')
-   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'scheduled')
-   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'strict')
-   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'safety_snapshot')
-   AND to_regclass('public.role_logins') IS NOT NULL AND to_regclass('public.settings') IS NOT NULL`).Scan(&ready)
-	if err == nil && !ready {
-		err = errors.New("snapshot tables are not migrated yet")
-	}
 	return err
 }
 

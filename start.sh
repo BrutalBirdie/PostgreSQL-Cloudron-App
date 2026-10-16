@@ -37,11 +37,6 @@ fi
 chown -R cloudron:cloudron /app/data
 readonly SNAPSHOT_DIR="${PG_ROOT}/snapshots"
 mkdir -p "${SNAPSHOT_DIR}"
-if [[ -d /app/data/snapshots ]]; then
-    echo "==> Moving snapshots to ${SNAPSHOT_DIR}, they are no longer part of Cloudron backups"
-    cp -a /app/data/snapshots/. "${SNAPSHOT_DIR}/"
-    rm -rf /app/data/snapshots
-fi
 # written by the worker (postgres), read and deleted by the panel (cloudron)
 chown -R postgres:cloudron "${SNAPSHOT_DIR}"
 find "${SNAPSHOT_DIR}" -type d -exec chmod 2770 {} +

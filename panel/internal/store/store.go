@@ -42,47 +42,24 @@ func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
-func (s *Store) Migrate(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `
-CREATE TABLE IF NOT EXISTS sessions (
-    id_hash bytea PRIMARY KEY,
-    username text NOT NULL,
-    display_name text NOT NULL,
-    is_admin boolean NOT NULL,
-    csrf_token text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    last_seen_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS oidc_logins (
-    state_hash bytea PRIMARY KEY,
-    verifier text NOT NULL,
-    nonce text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS role_owners (
-    role_name text PRIMARY KEY,
-    owner text NOT NULL
-);
-ALTER TABLE role_owners ADD COLUMN IF NOT EXISTS max_databases integer NOT NULL DEFAULT 0;
-CREATE TABLE IF NOT EXISTS audit_log (
-    id bigserial PRIMARY KEY,
-    at timestamptz NOT NULL DEFAULT now(),
-    actor text NOT NULL,
-    action text NOT NULL,
-    target text NOT NULL,
-    detail text NOT NULL DEFAULT ''
-);`)
-	if err != nil {
-		return err
-	}
-	if _, err = s.pool.Exec(ctx, migrateSnapshots); err != nil {
-		return err
-	}
-	if _, err = s.pool.Exec(ctx, migrateUploads); err != nil {
-		return err
-	}
-	_, err = s.pool.Exec(ctx, migrateAccess)
+// CreateSchema creates the panel's tables. One statement list runs as one
+// implicit transaction, so the worker sees either no table or all of them.
+func (s *Store) CreateSchema(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, schema)
 	return err
+}
+
+// SchemaReady reports whether the panel has created its tables. It checks the
+// catalog, so polling it does not log errors.
+func (s *Store) SchemaReady(ctx context.Context) error {
+	var ready bool
+	if err := s.pool.QueryRow(ctx, `SELECT to_regclass('public.settings') IS NOT NULL`).Scan(&ready); err != nil {
+		return err
+	}
+	if !ready {
+		return errors.New("the panel has not created its tables yet")
+	}
+	return nil
 }
 
 func ident(name string) string { return pgx.Identifier{name}.Sanitize() }
@@ -222,7 +199,7 @@ func (s *Store) ListRoles(ctx context.Context) ([]Role, error) {
 SELECT r.rolname, r.rolconnlimit, coalesce(o.max_databases, 0),
        coalesce(array_agg(d.datname ORDER BY d.datname) FILTER (WHERE d.datname IS NOT NULL), '{}')
 FROM pg_roles r
-LEFT JOIN role_owners o ON o.role_name = r.rolname
+LEFT JOIN role_settings o ON o.role_name = r.rolname
 LEFT JOIN pg_database d ON d.datdba = r.oid AND NOT starts_with(d.datname, '`+InternalPrefix+`')
 WHERE r.rolname IN (`+tenantRoles+`)
 GROUP BY r.rolname, r.rolconnlimit, o.max_databases
@@ -326,7 +303,7 @@ func setOwners(ctx context.Context, tx pgx.Tx, role string, owners []access.Prin
 			return err
 		}
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO role_owners (role_name, max_databases) VALUES ($1, $2)
+	_, err := tx.Exec(ctx, `INSERT INTO role_settings (role_name, max_databases) VALUES ($1, $2)
 ON CONFLICT (role_name) DO UPDATE SET max_databases = EXCLUDED.max_databases`, role, maxDatabases)
 	return err
 }
@@ -389,7 +366,7 @@ func (s *Store) DropRole(ctx context.Context, name string) error {
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`DROP ROLE %s`, ident(name))); err != nil {
 		return err
 	}
-	for _, sql := range []string{`DELETE FROM role_owners WHERE role_name = $1`, `DELETE FROM role_access WHERE role_name = $1`, `DELETE FROM role_logins WHERE role_name = $1`} {
+	for _, sql := range []string{`DELETE FROM role_settings WHERE role_name = $1`, `DELETE FROM role_access WHERE role_name = $1`, `DELETE FROM role_logins WHERE role_name = $1`} {
 		if _, err := tx.Exec(ctx, sql, name); err != nil {
 			return err
 		}

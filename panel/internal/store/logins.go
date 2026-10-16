@@ -14,33 +14,6 @@ import (
 	"pgpanel/internal/access"
 )
 
-const migrateAccess = `
-CREATE TABLE IF NOT EXISTS role_access (
-    role_name text NOT NULL,
-    kind text NOT NULL CHECK (kind IN ('user', 'group')),
-    principal_id text NOT NULL,
-    display text NOT NULL DEFAULT '',
-    PRIMARY KEY (role_name, kind, principal_id)
-);
-ALTER TABLE role_owners ALTER COLUMN owner DROP NOT NULL;
-INSERT INTO role_access (role_name, kind, principal_id, display)
-    SELECT role_name, 'user', owner, owner FROM role_owners WHERE coalesce(owner, '') <> ''
-    ON CONFLICT DO NOTHING;
-UPDATE role_owners SET owner = NULL WHERE owner IS NOT NULL;
-CREATE TABLE IF NOT EXISTS role_logins (
-    login_role text PRIMARY KEY,
-    role_name text NOT NULL,
-    username text NOT NULL,
-    revoked boolean NOT NULL DEFAULT false,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    rotated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (role_name, username)
-);
-CREATE TABLE IF NOT EXISTS settings (
-    key text PRIMARY KEY,
-    value text NOT NULL
-);`
-
 type Login struct {
 	LoginRole string
 	RoleName  string
@@ -178,20 +151,6 @@ func (s *Store) TakeAccessSyncRequest(ctx context.Context) (bool, error) {
 	return tag.RowsAffected() > 0, err
 }
 
-func (s *Store) Setting(ctx context.Context, key string) (string, error) {
-	var v string
-	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&v)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	return v, err
-}
-
-func (s *Store) SetSetting(ctx context.Context, key, value string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, key, value)
-	return err
-}
-
 func (s *Store) roleOwners(ctx context.Context) (map[string][]access.Principal, error) {
 	rows, err := s.pool.Query(ctx, `SELECT role_name, kind, principal_id, display FROM role_access ORDER BY kind DESC, display, principal_id`)
 	if err != nil {
@@ -258,42 +217,4 @@ func (s *Store) inDatabase(ctx context.Context, database, sql string) error {
 	defer conn.Close(context.WithoutCancel(ctx))
 	_, err = conn.Exec(ctx, sql)
 	return err
-}
-
-// DisableSharedPasswords removes the password of every shared role and ends
-// their sessions (worker, superuser). Since 0.7.0 people use their own login.
-func (s *Store) DisableSharedPasswords(ctx context.Context) ([]string, error) {
-	// pg_roles masks rolpassword, pg_authid (superuser only) has the real value
-	rows, err := s.pool.Query(ctx, `SELECT a.rolname FROM pg_authid a WHERE a.rolpassword IS NOT NULL AND a.rolname IN (`+tenantRoles+`)`)
-	if err != nil {
-		return nil, err
-	}
-	roles, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, err
-	}
-	for _, role := range roles {
-		if _, err := s.pool.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s PASSWORD NULL`, ident(role))); err != nil {
-			return nil, err
-		}
-		// the worker's own dumps connect through the socket, only network sessions used the password
-		if _, err := s.pool.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1 AND client_addr IS NOT NULL`, role); err != nil {
-			return nil, err
-		}
-	}
-	return roles, nil
-}
-
-// DisableSharedPasswordsOnce runs DisableSharedPasswords on the first start
-// after the update to per-user logins.
-func (s *Store) DisableSharedPasswordsOnce(ctx context.Context) ([]string, error) {
-	done, err := s.Setting(ctx, "shared_passwords_disabled")
-	if err != nil || done != "" {
-		return nil, err
-	}
-	roles, err := s.DisableSharedPasswords(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return roles, s.SetSetting(ctx, "shared_passwords_disabled", time.Now().UTC().Format(time.RFC3339))
 }

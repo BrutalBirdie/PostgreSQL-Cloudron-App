@@ -14,11 +14,6 @@ import (
 // When the directory cannot be read nothing is revoked, a SCIM outage must not
 // lock out every client.
 func (w *Worker) AccessSync(ctx context.Context, interval time.Duration) {
-	if roles, err := w.store.DisableSharedPasswordsOnce(ctx); err != nil {
-		w.log.Error("disabling shared role passwords", "err", err)
-	} else if len(roles) > 0 {
-		w.log.Info("disabled shared role passwords, people connect with their own login now", "roles", roles)
-	}
 	var last time.Time
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()

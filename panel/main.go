@@ -80,9 +80,9 @@ func runWorker(log *slog.Logger) error {
 		return err
 	}
 	defer st.Close()
-	// the panel owns and creates the tables, a superuser-created table would lock it out
+	// the panel owns and creates the tables, a table created by the superuser would lock it out
 	for deadline := time.Now().Add(120 * time.Second); ; {
-		err = st.CheckSnapshotTables(ctx)
+		err = st.SchemaReady(ctx)
 		if err == nil {
 			break
 		}
@@ -165,12 +165,12 @@ func serve(log *slog.Logger) error {
 	defer st.Close()
 	// supervisor starts PostgreSQL and the panel at the same time
 	for deadline := time.Now().Add(60 * time.Second); ; {
-		err = st.Migrate(ctx)
+		err = st.CreateSchema(ctx)
 		if err == nil {
 			break
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			return fmt.Errorf("migrate: %w", err)
+			return fmt.Errorf("creating the schema: %w", err)
 		}
 		log.Info("waiting for postgresql", "err", err)
 		time.Sleep(2 * time.Second)

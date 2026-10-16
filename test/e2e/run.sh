@@ -162,18 +162,6 @@ expect "no login removed while SCIM is down" "^1$" "$(superuser "select count(*)
 expect "bob still connects while SCIM is down" "^1$" "$(pg "${bob_pw}" e2e_bob.bob e2e_bob 'select 1')"
 docker start "${scim}" >/dev/null
 
-echo "==> Shared passwords are disabled once on update"
-superuser "alter role e2e_eve password 'legacy-pass-123'" >/dev/null
-superuser "delete from settings where key = 'shared_passwords_disabled'" pgpanel >/dev/null
-expect "legacy password works before the update" "^1$" "$(pg legacy-pass-123 e2e_eve e2e_eve 'select 1')"
-docker restart "${app}" >/dev/null
-wait_healthy
-for _ in $(seq 1 20); do
-    [[ "$(superuser "select rolpassword is null from pg_authid where rolname = 'e2e_eve'")" == "t" ]] && break
-    sleep 1
-done
-expect "legacy shared password disabled" "password authentication failed" "$(pg legacy-pass-123 e2e_eve e2e_eve 'select 1')"
-expect "per-user login unaffected" "^1$" "$(pg "${eve_pw}" e2e_eve.eve e2e_eve 'select 1')"
 
 
 browser bob1

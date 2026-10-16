@@ -1,54 +1,9 @@
-[0.1.0]
+[1.0.0]
 * Initial version with PostgreSQL 18.6
-
-[0.2.0]
-* Add web panel with Cloudron login
-* Admins create roles and databases, assign roles to users, and manage the allowed networks
-* Users rotate passwords and delete databases of their own roles
-* Audit log of all changes
-
-[0.3.0]
-* Admins can be set by username with PG_ADMINS in /app/data/env.sh
-* Roles can be allowed to create their own databases up to a set maximum
-* Fix form submissions being rejected by the browser origin check
-
-[0.4.0]
-* Database snapshots: create on demand, download as .dump or .sql, restore, delete
-* A snapshot of the current state is taken automatically before every restore
-* The number of snapshots kept per database is set with PG_MAX_SNAPSHOTS in /app/data/env.sh
-
-[0.5.0]
-* Automatic snapshots on a cron schedule (UTC, at most hourly) per database
-* Manual, scheduled and before-restore snapshots are rotated separately
-* Default number of kept snapshots raised to 7
-* Restore has its own confirmation page, database deletion moved to a danger zone on the database page
-
-[0.5.1]
-* Fix snapshot downloads failing with permission denied for databases whose first snapshot was made after 0.4.0
-* Database deletion returns to My databases unless an admin deletes another user's database
-* Stream snapshot downloads instead of buffering them in nginx
-* Remove partial snapshot files left by an interrupted worker
-* Delete finished snapshot jobs after 30 days
-* Stop the worker from logging errors while waiting for the panel's first migration
-* Fix row borders in the snapshot table
-
-[0.6.0]
-* Import a pg_dump archive (custom or tar format) into a database from an uploaded file
-* Upload dump files in the panel or copy them with the File Manager to /app/data/uploads/<role>/
-* Uploads are deleted after PG_UPLOAD_RETENTION_DAYS (default 8) unless marked to keep
-* Plain SQL files are refused for server side import, psql would run meta-commands from the file
-* SHA-256 checks for uploads: the browser hashes the file before uploading, the server hashes it while writing and discards it on a mismatch
-* Optional checksum from where the dump was made, also for files copied with the File Manager
-* The worker checks the SHA-256 again before importing and refuses files that changed
-* Snapshots, restores and imports show their progress: current step and, while loading, how much of the dump has been read
-* Snapshots show an estimated percentage and the table being copied, from the table sizes and pg_stat_progress_copy
-* Restores and imports load into a new database and switch over at the end. The current database stays online and unchanged until then, a failed all-or-nothing import changes nothing
-
-[0.7.0]
-* Roles can have several owners: Cloudron users and groups, chosen with a search in the admin panel (needs the SCIM addon)
-* Every owner has an own login (role.username) and password. A user who is no longer an owner, directly or through a group, loses the login within a minute; the other logins keep working
-* Breaking: the shared password of existing roles is disabled on update. Owners create their own login on My databases and clients must switch to it
-* PG_ADMIN_GROUP accepts several groups, group membership is checked live
-* The safety snapshot before a restore or import is optional (checked by default)
-* Snapshots use zstd compression and are stored outside of Cloudron backups, the backup already contains a full dump
-* Snapshots and backups quote all identifiers
+* Remote access over TLS 1.3 with SCRAM-SHA-256, blocked until a network is added to the allowlist
+* Admin panel with Cloudron login: roles, databases, allowed networks, audit log
+* Roles are owned by Cloudron users and groups. Every owner has an own login, it is removed when the user is no longer an owner
+* Owners can create databases up to a limit set by the admin
+* Snapshots on demand and on a schedule, download as .dump or .sql, restore into a staging database that is swapped in
+* Import of uploaded pg_dump archives with SHA-256 checks
+* Progress display for snapshots, restores and imports
