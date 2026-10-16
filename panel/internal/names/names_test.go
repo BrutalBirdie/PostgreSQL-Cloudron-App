@@ -9,7 +9,7 @@ func TestValidate(t *testing.T) {
 			t.Errorf("%q: unexpected error %v", n, err)
 		}
 	}
-	bad := []string{"", "ab", "1abc", "Abc", "a-b", "a b", `a"b`, "a;b", "ab'c", "pg_foo", "postgres", "pgpanel", "tenants", "template1", "public",
+	bad := []string{"", "ab", "1abc", "Abc", "a-b", "a b", `a"b`, "a;b", "ab'c", "pg_foo", "pgpanel_staging_1", "postgres", "pgpanel", "tenants", "template1", "public",
 		"a234567890123456789012345678901234567890123456789012345678901234"}
 	for _, n := range bad {
 		if err := Validate(n); err == nil {

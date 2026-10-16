@@ -52,3 +52,5 @@ section.card > form + table { margin-top: 12px; }
 .tag { display: inline-block; font-size: 0.8em; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
 progress { width: 100%; max-width: 480px; }
 #upload-status:empty { display: none; }
+.job-progress { display: grid; gap: 6px; }
+.job-progress progress { width: 100%; max-width: none; }

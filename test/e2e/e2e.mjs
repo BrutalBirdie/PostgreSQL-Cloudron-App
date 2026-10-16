@@ -33,11 +33,17 @@ async function login(page, user, groups) {
     await page.waitForURL(BASE + '/');
 }
 
+// waits until the newest job is done or failed, and reports a page that hides a
+// job that is still queued or running
 async function waitForJobs(page, url) {
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 120; i++) {
         await page.goto(url);
-        if (!(await page.content()).includes('A job is running')) return true;
-        await page.waitForTimeout(1000);
+        const newest = page.locator('section', { hasText: 'Recent jobs' }).locator('tbody tr').first();
+        const status = (await newest.count()) ? (await newest.locator('td').nth(3).textContent()).trim() : '';
+        const banner = (await page.locator('.job-progress').count()) > 0;
+        if (/^(done|failed)/.test(status)) return true;
+        if (!banner) check('progress banner shown while a job is active', false, `status=${status.slice(0, 80)}`);
+        await page.waitForTimeout(500);
     }
     return false;
 }
@@ -287,6 +293,68 @@ const steps = {
         await waitForJobs(page, BASE + '/databases/e2e_bob');
         const html = await page.content();
         check('import of a file changed on disk refused', html.includes('the file changed since it was uploaded'), html.match(/<span class="error">[^<]*/)?.[0] ?? '');
+        await save();
+    },
+
+    async bigImport() {
+        const { page, save } = await session('bob');
+        await page.goto(BASE + '/roles/e2e_bob/uploads');
+        await page.setInputFiles('input[type=file]', '/work/files/big.dump');
+        const uploaded = page.waitForEvent('framenavigated');
+        await page.click('#upload-form button');
+        await uploaded;
+        await page.waitForLoadState();
+        const row = page.locator('tbody tr', { has: page.locator('code:text-is("big.dump")') });
+        await row.locator('form[action$="/import"] button').click();
+        await page.waitForURL(/\/uploads\/\d+\/import/);
+        await page.fill('input[name=confirm]', 'e2e_bob');
+        await page.click('button:has-text("Import")');
+        await page.waitForURL(BASE + '/databases/e2e_bob');
+
+        const steps = new Set();
+        const percents = new Set();
+        for (let i = 0; i < 240; i++) {
+            const res = await page.goto(BASE + '/databases/e2e_bob');
+            if (res.status() !== 200) {
+                check('database page reachable during the import', false, `HTTP ${res.status()}: ${(await page.textContent('main')).trim().slice(0, 200)}`);
+                await page.waitForTimeout(250);
+                continue;
+            }
+            const banner = page.locator('.job-progress');
+            if (!(await banner.count())) {
+                if (!(await page.content()).includes('Recent jobs')) check('database page shown during the import', false, (await page.textContent('body')).trim().slice(0, 200));
+                break;
+            }
+            steps.add((await banner.locator('span').first().textContent()).replace(/ \(\d+%\)$/, '').replace(/[0-9.]+ [KMG]?i?B written/, 'N written'));
+            const bar = banner.locator('progress');
+            if (await bar.count()) percents.add(Number(await bar.getAttribute('value')));
+            await page.waitForTimeout(250);
+        }
+        console.log('       seen steps:', [...steps].join(' | '));
+        console.log('       seen percents:', [...percents].sort((a, b) => a - b).join(','));
+        check('progress shows table data loading', [...steps].some((s) => s.includes('Processing data for table "public.big"')));
+        check('progress bar moved during the import', [...percents].some((p) => p > 0 && p < 100));
+        const newest = await page.locator('section', { hasText: 'Recent jobs' }).locator('tbody tr').first().innerHTML();
+        check('big import done', newest.includes('<td>import</td>') && newest.includes('done'), newest);
+        await save();
+    },
+
+    async failedImport() {
+        const { page, save } = await session('bob');
+        await page.goto(BASE + '/roles/e2e_bob/uploads');
+        await page.setInputFiles('input[type=file]', '/work/files/ext.dump');
+        const uploaded = page.waitForEvent('framenavigated');
+        await page.click('#upload-form button');
+        await uploaded;
+        await page.waitForLoadState();
+        await page.locator('tbody tr', { has: page.locator('code:text-is("ext.dump")') }).locator('form[action$="/import"] button').click();
+        await page.waitForURL(/\/uploads\/\d+\/import/);
+        await page.fill('input[name=confirm]', 'e2e_bob');
+        await page.click('button:has-text("Import")');
+        await page.waitForURL(BASE + '/databases/e2e_bob');
+        await waitForJobs(page, BASE + '/databases/e2e_bob');
+        const newest = await page.locator('section', { hasText: 'Recent jobs' }).locator('tbody tr').first().innerHTML();
+        check('failed import reported', newest.includes('failed') && newest.includes('nothing changed') && newest.includes('file_fdw'), newest.slice(0, 400));
         await save();
     },
 

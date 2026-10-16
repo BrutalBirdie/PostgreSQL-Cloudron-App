@@ -18,7 +18,7 @@ while IFS= read -r db; do
     i=$((i + 1))
     echo "==> Dumping database ${db}"
     gosu postgres pg_dump -h "${PG_SOCKET_DIR}" -U postgres --format=custom --create --dbname="${db}" > "${tmp_dir}/$(printf '%04d' "${i}").dump"
-done < <(psql_admin -d postgres -At -c "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND datname <> 'postgres' ORDER BY datname")
+done < <(psql_admin -d postgres -At -c "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND datname <> 'postgres' AND NOT starts_with(datname, 'pgpanel_') ORDER BY datname")
 
 rm -rf "${DUMP_DIR}"
 mv "${tmp_dir}" "${DUMP_DIR}"

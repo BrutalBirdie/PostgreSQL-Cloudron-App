@@ -25,7 +25,7 @@ func Validate(name string) error {
 	if !pattern.MatchString(name) {
 		return ErrInvalid
 	}
-	if reserved[name] || strings.HasPrefix(name, "pg_") {
+	if reserved[name] || strings.HasPrefix(name, "pg_") || strings.HasPrefix(name, "pgpanel_") {
 		return ErrReserved
 	}
 	return nil

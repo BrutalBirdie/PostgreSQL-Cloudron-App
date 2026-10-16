@@ -73,6 +73,9 @@ type Job struct {
 	SnapshotID  *int64
 	UploadID    *int64
 	Strict      bool
+	Progress    *int // percent, nil when unknown
+	Step        string
+	StartedAt   *time.Time
 	RequestedBy string
 	Status      string
 	Error       string
@@ -102,7 +105,7 @@ func asJobActive(err error) error {
 }
 
 func (s *Store) ListJobs(ctx context.Context, database string, limit int) ([]Job, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, kind, database, snapshot_id, upload_id, strict, requested_by, status, error, created_at, finished_at, scheduled
+	rows, err := s.pool.Query(ctx, `SELECT id, kind, database, snapshot_id, upload_id, strict, progress, progress_step, started_at, requested_by, status, error, created_at, finished_at, scheduled
 FROM jobs WHERE database = $1 ORDER BY id DESC LIMIT $2`, database, limit)
 	if err != nil {
 		return nil, err
@@ -112,16 +115,21 @@ FROM jobs WHERE database = $1 ORDER BY id DESC LIMIT $2`, database, limit)
 
 func scanJob(r pgx.CollectableRow) (Job, error) {
 	var j Job
-	err := r.Scan(&j.ID, &j.Kind, &j.Database, &j.SnapshotID, &j.UploadID, &j.Strict, &j.RequestedBy, &j.Status, &j.Error, &j.CreatedAt, &j.FinishedAt, &j.Scheduled)
+	var progress *int16
+	err := r.Scan(&j.ID, &j.Kind, &j.Database, &j.SnapshotID, &j.UploadID, &j.Strict, &progress, &j.Step, &j.StartedAt, &j.RequestedBy, &j.Status, &j.Error, &j.CreatedAt, &j.FinishedAt, &j.Scheduled)
+	if progress != nil {
+		p := int(*progress)
+		j.Progress = &p
+	}
 	return j, err
 }
 
 // ClaimJob marks the oldest queued job as running, nil when there is none.
 func (s *Store) ClaimJob(ctx context.Context) (*Job, error) {
 	rows, err := s.pool.Query(ctx, `
-UPDATE jobs SET status = 'running'
+UPDATE jobs SET status = 'running', started_at = now()
 WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-RETURNING id, kind, database, snapshot_id, upload_id, strict, requested_by, status, error, created_at, finished_at, scheduled`)
+RETURNING id, kind, database, snapshot_id, upload_id, strict, progress, progress_step, started_at, requested_by, status, error, created_at, finished_at, scheduled`)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +144,16 @@ RETURNING id, kind, database, snapshot_id, upload_id, strict, requested_by, stat
 type Warning struct{ Msg string }
 
 func (w Warning) Error() string { return w.Msg }
+
+// SetJobProgress stores the progress of a running job, pct < 0 means unknown.
+func (s *Store) SetJobProgress(ctx context.Context, id int64, pct int, step string) error {
+	var p *int
+	if pct >= 0 {
+		p = &pct
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE jobs SET progress = $2, progress_step = $3 WHERE id = $1 AND status = 'running'`, id, p, step)
+	return err
+}
 
 func (s *Store) FinishJob(ctx context.Context, id int64, jobErr error) error {
 	status, msg := "done", ""
@@ -223,25 +241,103 @@ DELETE FROM snapshots WHERE database = $1 AND kind = $4 AND NOT (id = ANY($3)) A
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
-// RecreateDatabase is used by the worker before a restore. It runs as superuser
-// and only executes fixed DDL, never anything from the tenant's data.
-func (s *Store) RecreateDatabase(ctx context.Context, name, owner string) error {
+// Databases with this prefix are internal: staging databases a restore loads
+// into and replaced databases waiting to be dropped. The panel never lists them.
+const InternalPrefix = "pgpanel_"
+
+func StagingName(jobID int64) string  { return fmt.Sprintf("%sstaging_%d", InternalPrefix, jobID) }
+func replacedName(jobID int64) string { return fmt.Sprintf("%sreplaced_%d", InternalPrefix, jobID) }
+
+// CreateStaging creates the empty database a restore loads into, locked down
+// like any tenant database. The worker runs these as superuser and only
+// executes fixed DDL, never anything from the tenant's data.
+func (s *Store) CreateStaging(ctx context.Context, staging, owner string) error {
+	for _, sql := range []string{
+		fmt.Sprintf(`DROP DATABASE IF EXISTS %s WITH (FORCE)`, ident(staging)),
+		fmt.Sprintf(`CREATE DATABASE %s OWNER %s`, ident(staging), ident(owner)),
+		fmt.Sprintf(`REVOKE ALL ON DATABASE %[1]s FROM PUBLIC; GRANT CONNECT, TEMPORARY ON DATABASE %[1]s TO %[2]s`, ident(staging), ident(owner)),
+	} {
+		if _, err := s.pool.Exec(ctx, sql); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) DropInternal(ctx context.Context, name string) error {
+	_, err := s.pool.Exec(ctx, fmt.Sprintf(`DROP DATABASE IF EXISTS %s WITH (FORCE)`, ident(name)))
+	return err
+}
+
+// DropAllInternal removes staging and replaced databases left by an interrupted worker.
+func (s *Store) DropAllInternal(ctx context.Context) error {
+	rows, err := s.pool.Query(ctx, `SELECT datname FROM pg_database WHERE starts_with(datname, $1)`, InternalPrefix)
+	if err != nil {
+		return err
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := s.DropInternal(ctx, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SwapStaging replaces database name with the loaded staging database. Both
+// renames run in one transaction, so the name always points to a database.
+func (s *Store) SwapStaging(ctx context.Context, name string, jobID int64) error {
+	staging, replaced := StagingName(jobID), replacedName(jobID)
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Release()
-	steps := []string{
-		fmt.Sprintf(`DROP DATABASE IF EXISTS %s WITH (FORCE)`, ident(name)),
-		fmt.Sprintf(`CREATE DATABASE %s OWNER %s`, ident(name), ident(owner)),
-		fmt.Sprintf(`REVOKE ALL ON DATABASE %[1]s FROM PUBLIC; GRANT CONNECT, TEMPORARY ON DATABASE %[1]s TO %[2]s`, ident(name), ident(owner)),
+	// a rename needs the database without sessions, stop clients from reconnecting first
+	if _, err := conn.Exec(ctx, fmt.Sprintf(`ALTER DATABASE %s ALLOW_CONNECTIONS false`, ident(name))); err != nil {
+		return err
 	}
-	for _, sql := range steps {
-		if _, err := conn.Exec(ctx, sql); err != nil {
+	reopen := func() {
+		conn.Exec(context.WithoutCancel(ctx), fmt.Sprintf(`ALTER DATABASE %s ALLOW_CONNECTIONS true`, ident(name)))
+	}
+	for i := 0; ; i++ {
+		var left int
+		err := conn.QueryRow(ctx, `SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, name).Scan(&left)
+		if err != nil {
+			reopen()
 			return err
 		}
+		if left == 0 {
+			break
+		}
+		if i == 50 {
+			reopen()
+			return errors.New("clients did not disconnect from the database")
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	return nil
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		reopen()
+		return err
+	}
+	_, err = tx.Exec(ctx, fmt.Sprintf(`ALTER DATABASE %s RENAME TO %s`, ident(name), ident(replaced)))
+	if err == nil {
+		_, err = tx.Exec(ctx, fmt.Sprintf(`ALTER DATABASE %s RENAME TO %s`, ident(staging), ident(name)))
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		tx.Rollback(context.WithoutCancel(ctx))
+		reopen()
+		return err
+	}
+	_, err = conn.Exec(ctx, fmt.Sprintf(`DROP DATABASE %s WITH (FORCE)`, ident(replaced)))
+	return err
 }
 
 // CheckSnapshotTables reports whether the panel has migrated the snapshot
@@ -253,7 +349,7 @@ SELECT to_regclass('public.schedules') IS NOT NULL
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'snapshots' AND column_name = 'kind')
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'scheduled')
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'strict')
-   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'uploads' AND column_name = 'mtime')`).Scan(&ready)
+   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'started_at')`).Scan(&ready)
 	if err == nil && !ready {
 		err = errors.New("snapshot tables are not migrated yet")
 	}

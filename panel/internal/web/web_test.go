@@ -23,6 +23,7 @@ func testServer(t *testing.T) *Server {
 
 func TestPagesRender(t *testing.T) {
 	s := testServer(t)
+	now, pct := time.Now(), 42
 	admin := &store.Session{Username: "ann", DisplayName: "Ann", IsAdmin: true, CSRFToken: "tok"}
 	roles := []store.Role{{Name: "app_one", ConnLimit: 20, Owner: "ann", MaxDatabases: 3, Databases: []string{"app_one"}}}
 	pages := map[string]any{
@@ -42,7 +43,7 @@ func TestPagesRender(t *testing.T) {
 		"database": databaseData{
 			Database:     store.Database{Name: "app_one", Owner: "app_one"},
 			Snapshots:    []store.Snapshot{{ID: 7, Database: "app_one", OwnerRole: "app_one", SizeBytes: 123456, CreatedBy: "ann", CreatedAt: time.Now(), Note: "automatic"}},
-			Jobs:         []store.Job{{ID: 1, Kind: "snapshot", Status: "running", CreatedAt: time.Now()}},
+			Jobs:         []store.Job{{ID: 1, Kind: "import", Status: "running", CreatedAt: time.Now(), StartedAt: &now, Progress: &pct, Step: `Processing data for table "public.t"`}},
 			Busy:         true,
 			MaxSnapshots: 7,
 			Schedule:     &store.Schedule{Database: "app_one", OwnerRole: "app_one", Cron: "0 3 * * *", NextRun: time.Now()},
@@ -56,6 +57,9 @@ func TestPagesRender(t *testing.T) {
 		body := rec.Body.String()
 		if !strings.Contains(body, "</html>") {
 			t.Errorf("%s: incomplete page: %s", page, body)
+		}
+		if page == "database" && !strings.Contains(body, `<progress max="100" value="42">`) {
+			t.Errorf("database: progress bar missing")
 		}
 		if page != "login" && !strings.Contains(body, `value="tok"`) {
 			t.Errorf("%s: csrf token missing in logout form", page)

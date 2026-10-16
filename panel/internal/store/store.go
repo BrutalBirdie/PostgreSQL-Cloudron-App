@@ -203,7 +203,7 @@ SELECT r.rolname, r.rolconnlimit, coalesce(o.owner, ''), coalesce(o.max_database
        coalesce(array_agg(d.datname ORDER BY d.datname) FILTER (WHERE d.datname IS NOT NULL), '{}')
 FROM pg_roles r
 LEFT JOIN role_owners o ON o.role_name = r.rolname
-LEFT JOIN pg_database d ON d.datdba = r.oid
+LEFT JOIN pg_database d ON d.datdba = r.oid AND NOT starts_with(d.datname, '`+InternalPrefix+`')
 WHERE r.rolname IN (`+tenantRoles+`)
 GROUP BY r.rolname, r.rolconnlimit, o.owner, o.max_databases
 ORDER BY r.rolname`)
@@ -247,7 +247,7 @@ func (s *Store) GetRole(ctx context.Context, name string) (*Role, error) {
 func (s *Store) ListDatabases(ctx context.Context) ([]Database, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT d.datname, r.rolname FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba
-WHERE NOT d.datistemplate AND r.rolname IN (`+tenantRoles+`)
+WHERE NOT d.datistemplate AND NOT starts_with(d.datname, '`+InternalPrefix+`') AND r.rolname IN (`+tenantRoles+`)
 ORDER BY d.datname`)
 	if err != nil {
 		return nil, err
@@ -389,7 +389,7 @@ func (s *Store) CreateDatabase(ctx context.Context, name, owner string, limit in
 	}()
 	if limit > 0 {
 		var owned int
-		if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba WHERE r.rolname = $1`, owner).Scan(&owned); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba WHERE r.rolname = $1 AND NOT starts_with(d.datname, '`+InternalPrefix+`')`, owner).Scan(&owned); err != nil {
 			return err
 		}
 		if owned >= limit {

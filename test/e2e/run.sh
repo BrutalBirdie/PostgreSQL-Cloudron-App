@@ -15,7 +15,7 @@ readonly work=$(mktemp -d)
 failures=0
 
 cleanup() {
-    cleanup_containers
+    [[ -n "${KEEP:-}" ]] || cleanup_containers
     rm -rf "${work}"
 }
 cleanup_containers() {
@@ -139,6 +139,39 @@ browser uploads2
 # change one byte but keep size and mtime, so only the checksum can notice
 docker exec "${app}" bash -c 'f=/app/data/uploads/e2e_bob/import_me-1.dump; m=$(stat -c %y "$f"); printf X | dd of="$f" bs=1 seek=200 conv=notrunc status=none; touch -d "$m" "$f"'
 browser tampered
+
+pg "${new_pw}" e2e_bob e2e_bob "create table big as select g as id, md5(g::text) || md5((g * 7)::text) as payload from generate_series(1, 3000000) g; create index big_payload on big (payload)" >/dev/null
+docker run --rm --network "container:${app}" -v "${work}/certs:/certs:ro" -e PGPASSWORD="${new_pw}" "${img}" \
+    pg_dump --format=custom --compress=0 "host=pg.test hostaddr=${app_ip} sslmode=verify-full sslrootcert=/certs/tls_cert.pem user=e2e_bob dbname=e2e_bob" > "${work}/files/big.dump"
+chmod a+r "${work}/files/big.dump"
+pg "${new_pw}" e2e_bob e2e_bob 'drop table big' >/dev/null
+# a client keeps querying while the import runs, it must see the old data until the swap
+( for _ in $(seq 1 400); do pg "${new_pw}" e2e_bob e2e_bob 'select v from imported_marker' | head -1; done ) > "${work}/during.log" 2>&1 &
+client=$!
+browser bigImport
+kill "${client}" 2>/dev/null || true
+wait "${client}" 2>/dev/null || true
+expect "client saw the old data during the import" "^[3-9]|^[1-9][0-9]" "$(grep -c '^from dump$' "${work}/during.log")"
+expect "client interrupted only at the swap" "^[0-2]$" "$(grep -vc '^from dump$' "${work}/during.log" || true)"
+expect "no staging databases left" "^0$" "$(superuser "select count(*) from pg_database where datname like 'pgpanel\_%'")"
+import_job=$(superuser "select max(id) from jobs where kind = 'import'" pgpanel)
+steps=$(docker logs "${app}" 2>&1 | grep '"msg":"job step","id":'"${import_job}"',' | while read -r line; do yq -p json -oy '.step' <<<"${line}"; done \
+    | sed -E 's/: [0-9.]+ [KMG]?i?B written$//' | uniq | paste -sd '>' -)
+steps_pattern='^Checking the SHA-256 of the file>Taking a safety snapshot of the current data>Creating a new database to load into, the current one stays online>Starting pg_restore>.*Processing data for table "public.big">.*Creating INDEX "public.big_payload">Switching to the new database$'
+expect "import steps logged in order" "${steps_pattern}" "${steps}"
+expect "big import restored all rows" "^3000000$" "$(pg "${new_pw}" e2e_bob e2e_bob 'select count(*) from big')"
+expect "progress recorded for the finished job" "Switching to the new database" "$(superuser "select progress_step from jobs where kind = 'import' order by id desc limit 1" pgpanel)"
+
+# a dump that needs an extension tenants may not create fails in all-or-nothing mode
+superuser "create database e2e_extsrc" >/dev/null
+superuser "create extension file_fdw; create table t(i int); insert into t values (1)" e2e_extsrc >/dev/null
+docker exec "${app}" gosu postgres pg_dump -h /var/lib/postgresql/run --format=custom e2e_extsrc > "${work}/files/ext.dump"
+chmod a+r "${work}/files/ext.dump"
+superuser "drop database e2e_extsrc" >/dev/null
+browser failedImport
+expect "failed import left the data unchanged" "^from dump$" "$(pg "${new_pw}" e2e_bob e2e_bob 'select v from imported_marker')"
+expect "failed import left no staging database" "^0$" "$(superuser "select count(*) from pg_database where datname like 'pgpanel\_%'")"
+pg "${new_pw}" e2e_bob e2e_bob 'drop table big' >/dev/null
 expect "import loaded the dump" "^from dump$" "$(pg "${new_pw}" e2e_bob e2e_bob 'select v from imported_marker')"
 expect "imported objects owned by bob" "^e2e_bob$" "$(pg "${new_pw}" e2e_bob e2e_bob "select tableowner from pg_tables where tablename = 'imported_marker'")"
 expect "plain SQL never executed" "^no$" "$(docker exec "${app}" bash -c 'test -e /tmp/pwned && echo yes || echo no')"
@@ -154,7 +187,10 @@ remaining=$(docker exec "${app}" ls /app/data/uploads/e2e_bob)
 expect "expired uploads deleted" "^import_me.dump$" "${remaining}"
 
 superuser "update schedules set next_run = now() - interval '1 minute'" pgpanel >/dev/null
-sleep 8
+for _ in $(seq 1 60); do
+    [[ "$(superuser "select count(*) from jobs where scheduled and status = 'done'" pgpanel)" -ge 1 ]] && break
+    sleep 1
+done
 browser bob3
 browser eve
 browser admin2
@@ -185,8 +221,8 @@ expect "allowlist survives restore" "${app_ip}" "$(docker exec "${app}" cat /run
 browser afterRestore
 
 echo "==> Logs"
-expect "no panel or worker errors" "^$" "$(docker logs "${app}" 2>&1 | grep '"level":"ERROR"' | grep -v 'the file changed since it was uploaded' || true)"
-expect "no PostgreSQL errors except expected test failures" "^$" "$(docker logs "${app}" 2>&1 | grep -E ' (ERROR|PANIC):' | grep -vE 'permission denied (to create database|to use|for)|must be superuser|role "postgres" already exists|COPY to or from an external program' || true)"
+expect "no panel or worker errors" "^$" "$(docker logs "${app}" 2>&1 | grep '"level":"ERROR"' | grep -v 'the file changed since it was uploaded\|file_fdw' || true)"
+expect "no PostgreSQL errors except expected test failures" "^$" "$(docker logs "${app}" 2>&1 | grep -E ' (ERROR|PANIC):' | grep -vE 'permission denied (to create database|to use|for)|must be superuser|role "postgres" already exists|COPY to or from an external program|file_fdw|current transaction is aborted' || true)"
 
 echo
 if [[ ${failures} -eq 0 ]]; then

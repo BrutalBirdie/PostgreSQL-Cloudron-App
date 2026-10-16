@@ -24,6 +24,9 @@ ALTER TABLE uploads ADD COLUMN IF NOT EXISTS verified_by text NOT NULL DEFAULT '
 ALTER TABLE uploads ADD COLUMN IF NOT EXISTS mtime timestamptz;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS upload_id bigint;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS strict boolean NOT NULL DEFAULT true;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS progress smallint;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS progress_step text NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS started_at timestamptz;
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
 ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check CHECK (kind IN ('snapshot', 'restore', 'import'));`
 

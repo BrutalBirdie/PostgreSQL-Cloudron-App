@@ -40,3 +40,5 @@
 * SHA-256 checks for uploads: the browser hashes the file before uploading, the server hashes it while writing and discards it on a mismatch
 * Optional checksum from where the dump was made, also for files copied with the File Manager
 * The worker checks the SHA-256 again before importing and refuses files that changed
+* Snapshots, restores and imports show their progress: current step and, while loading, how much of the dump has been read
+* Restores and imports load into a new database and switch over at the end. The current database stays online and unchanged until then, a failed all-or-nothing import changes nothing

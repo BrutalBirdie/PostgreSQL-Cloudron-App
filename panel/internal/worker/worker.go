@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -68,6 +69,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		return err
 	}
 	w.removePartials()
+	if err := w.store.DropAllInternal(ctx); err != nil {
+		w.log.Error("dropping leftover staging databases", "err", err)
+	}
 	w.log.Info("worker started", "max_snapshots", w.cfg.MaxSnapshots)
 	for {
 		w.enqueueDue(ctx)
@@ -84,7 +88,17 @@ func (w *Worker) Run(ctx context.Context) error {
 			continue
 		}
 		w.log.Info("job started", "id", job.ID, "kind", job.Kind, "database", job.Database)
-		jobErr := w.run(ctx, job)
+		lastStep := ""
+		jobCtx := withReporter(ctx, func(pct int, step string) {
+			if step != lastStep {
+				w.log.Info("job step", "id", job.ID, "step", step)
+				lastStep = step
+			}
+			if err := w.store.SetJobProgress(ctx, job.ID, pct, step); err != nil && ctx.Err() == nil {
+				w.log.Error("storing job progress", "id", job.ID, "err", err)
+			}
+		})
+		jobErr := w.run(jobCtx, job)
 		if jobErr != nil {
 			w.log.Error("job failed", "id", job.ID, "err", jobErr)
 		} else {
@@ -123,12 +137,12 @@ func (w *Worker) run(ctx context.Context, job *store.Job) error {
 		if job.SnapshotID == nil {
 			return errors.New("restore job without snapshot")
 		}
-		return w.restore(ctx, db, *job.SnapshotID, job.RequestedBy)
+		return w.restore(ctx, job.ID, db, *job.SnapshotID, job.RequestedBy)
 	case "import":
 		if job.UploadID == nil {
 			return errors.New("import job without upload")
 		}
-		return w.importUpload(ctx, db, *job.UploadID, job.Strict, job.RequestedBy)
+		return w.importUpload(ctx, job.ID, db, *job.UploadID, job.Strict, job.RequestedBy)
 	}
 	return fmt.Errorf("unknown job kind %q", job.Kind)
 }
@@ -145,8 +159,12 @@ func (w *Worker) snapshot(ctx context.Context, db *store.Database, by, kind, not
 	tmp := final + ".partial"
 	defer os.Remove(tmp)
 
-	if err := w.exec(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-acl",
-		"--host="+w.cfg.SocketDir, "--username="+db.Owner, "--dbname="+db.Name, "--file="+tmp); err != nil {
+	step := "Creating snapshot"
+	if kind == store.KindPreRestore {
+		step = "Taking a safety snapshot of the current data"
+	}
+	if err := w.dumpDatabase(ctx, step, tmp, "--format=custom", "--no-owner", "--no-acl",
+		"--host="+w.cfg.SocketDir, "--username="+db.Owner, "--dbname="+db.Name); err != nil {
 		return 0, err
 	}
 	if err := os.Chmod(tmp, 0o640); err != nil {
@@ -195,7 +213,7 @@ func (w *Worker) removePartials() {
 	}
 }
 
-func (w *Worker) restore(ctx context.Context, db *store.Database, snapshotID int64, by string) error {
+func (w *Worker) restore(ctx context.Context, jobID int64, db *store.Database, snapshotID int64, by string) error {
 	snap, err := w.store.GetSnapshot(ctx, snapshotID)
 	if err != nil {
 		return err
@@ -212,14 +230,14 @@ func (w *Worker) restore(ctx context.Context, db *store.Database, snapshotID int
 		return fmt.Errorf("snapshot file is not readable: %w", err)
 	}
 
-	before, err := w.replaceWith(ctx, db, file, true, by, fmt.Sprintf("taken before restoring snapshot #%d", snap.ID))
+	before, err := w.replaceWith(ctx, jobID, db, file, true, by, fmt.Sprintf("taken before restoring snapshot #%d", snap.ID))
 	if before != 0 {
 		w.prune(ctx, db.Name, store.KindPreRestore, snap.ID, before)
 	}
 	return err
 }
 
-func (w *Worker) importUpload(ctx context.Context, db *store.Database, uploadID int64, strict bool, by string) error {
+func (w *Worker) importUpload(ctx context.Context, jobID int64, db *store.Database, uploadID int64, strict bool, by string) error {
 	up, err := w.store.GetUpload(ctx, uploadID)
 	if err != nil {
 		return fmt.Errorf("upload #%d: %w", uploadID, err)
@@ -235,11 +253,11 @@ func (w *Worker) importUpload(ctx context.Context, db *store.Database, uploadID 
 	if up.SHA256 == "" {
 		return errors.New("the checksum of the file has not been calculated yet, try again in a moment")
 	}
-	sum, err := uploads.HashFile(file)
-	if err != nil {
+	hash := sha256.New()
+	if err := hashWithProgress(ctx, file, hash); err != nil {
 		return err
 	}
-	if sum != up.SHA256 {
+	if sum := hex.EncodeToString(hash.Sum(nil)); sum != up.SHA256 {
 		return fmt.Errorf("the file changed since it was uploaded (SHA-256 %s, expected %s), upload it again", sum, up.SHA256)
 	}
 	if _, err := uploads.Format(file); err != nil {
@@ -248,35 +266,52 @@ func (w *Worker) importUpload(ctx context.Context, db *store.Database, uploadID 
 	if err := w.exec(ctx, "pg_restore", "--list", file); err != nil {
 		return fmt.Errorf("file is not a readable pg_dump archive: %w", err)
 	}
-	before, err := w.replaceWith(ctx, db, file, strict, by, fmt.Sprintf("taken before importing %s", up.FileName))
+	before, err := w.replaceWith(ctx, jobID, db, file, strict, by, fmt.Sprintf("taken before importing %s", up.FileName))
 	if before != 0 {
 		w.prune(ctx, db.Name, store.KindPreRestore, before)
 	}
 	return err
 }
 
-// replaceWith takes a safety snapshot, recreates the database and loads the
-// archive as the owner role. It returns the safety snapshot id once it exists.
-func (w *Worker) replaceWith(ctx context.Context, db *store.Database, file string, strict bool, by, note string) (int64, error) {
+// replaceWith takes a safety snapshot, loads the archive as the owner role into
+// a new staging database and then swaps it in. The current database stays
+// online and unchanged until the swap. It returns the safety snapshot id once
+// it exists.
+func (w *Worker) replaceWith(ctx context.Context, jobID int64, db *store.Database, file string, strict bool, by, note string) (int64, error) {
 	before, err := w.snapshot(ctx, db, by, store.KindPreRestore, note)
 	if err != nil {
 		return 0, fmt.Errorf("safety snapshot failed, database unchanged: %w", err)
 	}
-	if err := w.store.RecreateDatabase(ctx, db.Name, db.Owner); err != nil {
-		return before, fmt.Errorf("recreating database: %w (snapshot #%d has the previous contents)", err, before)
+	staging := store.StagingName(jobID)
+	report(ctx, -1, "Creating a new database to load into, the current one stays online")
+	if err := w.store.CreateStaging(ctx, staging, db.Owner); err != nil {
+		return before, fmt.Errorf("creating the staging database failed, database unchanged: %w", err)
 	}
-	args := []string{"--no-owner", "--no-acl", "--host=" + w.cfg.SocketDir, "--username=" + db.Owner, "--dbname=" + db.Name}
+	args := []string{"--no-owner", "--no-acl", "--host=" + w.cfg.SocketDir, "--username=" + db.Owner, "--dbname=" + staging}
 	if strict {
 		args = append(args, "--single-transaction", "--exit-on-error")
 	}
-	if err := w.exec(ctx, "pg_restore", append(args, file)...); err != nil {
+	var warning error
+	if err := w.restoreArchive(ctx, file, args...); err != nil {
 		if strict {
-			return before, fmt.Errorf("nothing was loaded, the database is empty: %w (snapshot #%d has the previous contents)", err, before)
+			w.dropStaging(ctx, staging)
+			return before, fmt.Errorf("nothing changed, the database still has its previous contents: %w", err)
 		}
 		// pg_restore exits 1 after skipping failed statements, the rest is loaded
-		return before, store.Warning{Msg: fmt.Sprintf("loaded with errors: %v (snapshot #%d has the previous contents)", err, before)}
+		warning = store.Warning{Msg: fmt.Sprintf("loaded with errors: %v (snapshot #%d has the previous contents)", err, before)}
 	}
-	return before, nil
+	report(ctx, -1, "Switching to the new database")
+	if err := w.store.SwapStaging(ctx, db.Name, jobID); err != nil {
+		w.dropStaging(ctx, staging)
+		return before, fmt.Errorf("loaded, but switching to the new database failed, the database still has its previous contents: %w", err)
+	}
+	return before, warning
+}
+
+func (w *Worker) dropStaging(ctx context.Context, staging string) {
+	if err := w.store.DropInternal(context.WithoutCancel(ctx), staging); err != nil {
+		w.log.Error("dropping staging database", "database", staging, "err", err)
+	}
 }
 
 func (w *Worker) prune(ctx context.Context, database, kind string, protect ...int64) {
