@@ -74,7 +74,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, migrateSnapshots)
+	if _, err = s.pool.Exec(ctx, migrateSnapshots); err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrateUploads)
 	return err
 }
 

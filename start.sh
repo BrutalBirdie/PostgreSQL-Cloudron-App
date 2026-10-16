@@ -25,6 +25,8 @@ export PG_ADMIN_GROUP=postgres-admins
 export PG_ADMINS="james"
 # Snapshots kept per database and type (manual, scheduled, before restore), oldest are deleted first.
 export PG_MAX_SNAPSHOTS=7
+# Uploaded dump files are deleted after this many days unless marked to keep.
+export PG_UPLOAD_RETENTION_DAYS=8
 EOF
 fi
 source /app/data/env.sh
@@ -39,6 +41,11 @@ chown -R cloudron:cloudron /app/data
 chown -R postgres:cloudron /app/data/snapshots
 find /app/data/snapshots -type d -exec chmod 2770 {} +
 find /app/data/snapshots -type f -exec chmod 0640 {} +
+mkdir -p /app/data/uploads
+# written and deleted by the panel (cloudron), read by the worker (postgres)
+chown -R cloudron:postgres /app/data/uploads
+find /app/data/uploads -type d -exec chmod 2750 {} +
+find /app/data/uploads -type f -exec chmod 0640 {} +
 
 echo "==> Copying TLS certificate"
 if [[ ! -f /etc/certs/tls_cert.pem || ! -f /etc/certs/tls_key.pem ]]; then

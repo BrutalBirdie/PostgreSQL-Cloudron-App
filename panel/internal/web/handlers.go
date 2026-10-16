@@ -226,6 +226,12 @@ func (s *Server) deleteRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "role.drop", name, "")
+	if err := s.store.DeleteUploadsOf(r.Context(), name); err != nil {
+		s.log.Error("deleting upload records of dropped role", "role", name, "err", err)
+	}
+	if err := os.RemoveAll(s.uploadDir(name)); err != nil {
+		s.log.Error("deleting uploads of dropped role", "role", name, "err", err)
+	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 

@@ -31,3 +31,9 @@
 * Delete finished snapshot jobs after 30 days
 * Stop the worker from logging errors while waiting for the panel's first migration
 * Fix row borders in the snapshot table
+
+[0.6.0]
+* Import a pg_dump archive (custom or tar format) into a database from an uploaded file
+* Upload dump files in the panel or copy them with the File Manager to /app/data/uploads/<role>/
+* Uploads are deleted after PG_UPLOAD_RETENTION_DAYS (default 8) unless marked to keep
+* Plain SQL files are refused for server side import, psql would run meta-commands from the file

@@ -32,6 +32,11 @@ func TestPagesRender(t *testing.T) {
 		"secret":  secretData{Role: "app_one", Database: "app_one", Password: "pw"},
 		"audit":   []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}},
 		"error":   nil,
+		"uploads": uploadsData{Role: roles[0], KeepDays: 8, Uploads: []uploadView{
+			{Upload: store.Upload{ID: 1, FileName: "a.dump", SizeBytes: 10, FirstSeen: time.Now()}, Format: "custom"},
+			{Upload: store.Upload{ID: 2, FileName: "b.sql", Keep: true, FirstSeen: time.Now()}, FormatErr: "plain SQL"},
+		}},
+		"import": importData{Role: roles[0], Database: "app_one", Upload: uploadView{Upload: store.Upload{ID: 1, FileName: "a.dump"}, Format: "custom"}},
 		"restore": restoreData{Snapshot: store.Snapshot{ID: 7, CreatedAt: time.Now(), SizeBytes: 10}, Database: store.Database{Name: "app_one", Owner: "app_one"}},
 		"database": databaseData{
 			Database:     store.Database{Name: "app_one", Owner: "app_one"},

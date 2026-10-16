@@ -8,4 +8,5 @@ A standalone PostgreSQL 18 server for clients outside of Cloudron, with a web pa
 * Each role only gets access to the databases it owns
 * Sign in with Cloudron. Admins manage roles, databases and allowed networks, users manage the roles assigned to them
 * Users can create, download and restore snapshots of their databases
+* Users can upload pg_dump archives and import them into their databases
 * Backups are logical dumps taken by Cloudron's backup

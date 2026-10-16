@@ -1,0 +1,55 @@
+{{define "content"}}
+{{$csrf := .Session.CSRFToken}}
+{{$role := .Data.Role}}
+<p><a href="/">&larr; My databases</a></p>
+<h1>Uploads of role <code>{{$role.Name}}</code></h1>
+<p class="muted">Dump files to import into the databases of this role. Files are deleted {{.Data.KeepDays}} days after upload unless they are marked to keep.</p>
+
+<section class="card">
+  <h2>Upload a dump</h2>
+  <form method="post" action="/roles/{{$role.Name}}/uploads" enctype="multipart/form-data" class="inline">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="file" name="file" required aria-label="Dump file">
+    <button type="submit">Upload</button>
+  </form>
+  <p class="muted">Use <code>pg_dump --format=custom</code> (or <code>--format=tar</code>). Plain SQL files cannot be imported on the server.
+  The page waits until the upload has finished. For very large files, an administrator can copy them with the Cloudron File Manager to <code>{{.Data.Dir}}/</code>, they show up here automatically.</p>
+</section>
+
+<section class="card">
+  <h2>Files</h2>
+  <table>
+    <thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th>Kept until</th><th>Actions</th></tr></thead>
+    <tbody>
+    {{range .Data.Uploads}}
+    <tr>
+      <td><code>{{.FileName}}</code>{{if .Format}} <span class="tag">{{.Format}}</span>{{end}}{{with .FormatErr}}<br><span class="error">{{.}}</span>{{end}}</td>
+      <td>{{bytes .SizeBytes}}</td>
+      <td>{{.FirstSeen.UTC.Format "2006-01-02 15:04"}} UTC<br><span class="muted">by {{.UploadedBy}}</span></td>
+      <td>{{if .Keep}}kept{{else}}{{.Expires.UTC.Format "2006-01-02 15:04"}} UTC{{end}}</td>
+      <td><div class="actions">
+        {{if and .Format $role.Databases}}
+        <form method="get" action="/uploads/{{.ID}}/import" class="inline">
+          <select name="database" aria-label="Target database">{{range $role.Databases}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+          <button type="submit">Import</button>
+        </form>
+        {{end}}
+        <form method="post" action="/uploads/{{.ID}}/keep" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          {{if .Keep}}<input type="hidden" name="keep" value="0"><button type="submit" class="secondary">Do not keep</button>
+          {{else}}<input type="hidden" name="keep" value="1"><button type="submit" class="secondary">Keep</button>{{end}}
+        </form>
+        <form method="post" action="/uploads/{{.ID}}/delete" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <button type="submit" class="secondary">Delete</button>
+        </form>
+      </div></td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5">No files.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{if not $role.Databases}}<p class="muted">This role has no database to import into.</p>{{end}}
+</section>
+{{end}}

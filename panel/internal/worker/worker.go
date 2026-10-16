@@ -20,10 +20,12 @@ import (
 	"pgpanel/internal/names"
 	"pgpanel/internal/schedule"
 	"pgpanel/internal/store"
+	"pgpanel/internal/uploads"
 )
 
 type Config struct {
 	SnapshotDir  string
+	UploadDir    string
 	SocketDir    string
 	BinDir       string
 	MaxSnapshots int
@@ -122,6 +124,11 @@ func (w *Worker) run(ctx context.Context, job *store.Job) error {
 			return errors.New("restore job without snapshot")
 		}
 		return w.restore(ctx, db, *job.SnapshotID, job.RequestedBy)
+	case "import":
+		if job.UploadID == nil {
+			return errors.New("import job without upload")
+		}
+		return w.importUpload(ctx, db, *job.UploadID, job.Strict, job.RequestedBy)
 	}
 	return fmt.Errorf("unknown job kind %q", job.Kind)
 }
@@ -205,19 +212,61 @@ func (w *Worker) restore(ctx context.Context, db *store.Database, snapshotID int
 		return fmt.Errorf("snapshot file is not readable: %w", err)
 	}
 
-	before, err := w.snapshot(ctx, db, by, store.KindPreRestore, fmt.Sprintf("taken before restoring snapshot #%d", snap.ID))
+	before, err := w.replaceWith(ctx, db, file, true, by, fmt.Sprintf("taken before restoring snapshot #%d", snap.ID))
+	if before != 0 {
+		w.prune(ctx, db.Name, store.KindPreRestore, snap.ID, before)
+	}
+	return err
+}
+
+func (w *Worker) importUpload(ctx context.Context, db *store.Database, uploadID int64, strict bool, by string) error {
+	up, err := w.store.GetUpload(ctx, uploadID)
 	if err != nil {
-		return fmt.Errorf("safety snapshot before restore failed, database unchanged: %w", err)
+		return fmt.Errorf("upload #%d: %w", uploadID, err)
+	}
+	// uploads belong to a role, they can only go into that role's databases
+	if up.RoleName != db.Owner {
+		return errors.New("upload does not belong to the owner of this database")
+	}
+	file, err := uploads.Path(w.cfg.UploadDir, up.RoleName, up.FileName)
+	if err != nil {
+		return err
+	}
+	if _, err := uploads.Format(file); err != nil {
+		return err
+	}
+	if err := w.exec(ctx, "pg_restore", "--list", file); err != nil {
+		return fmt.Errorf("file is not a readable pg_dump archive: %w", err)
+	}
+	before, err := w.replaceWith(ctx, db, file, strict, by, fmt.Sprintf("taken before importing %s", up.FileName))
+	if before != 0 {
+		w.prune(ctx, db.Name, store.KindPreRestore, before)
+	}
+	return err
+}
+
+// replaceWith takes a safety snapshot, recreates the database and loads the
+// archive as the owner role. It returns the safety snapshot id once it exists.
+func (w *Worker) replaceWith(ctx context.Context, db *store.Database, file string, strict bool, by, note string) (int64, error) {
+	before, err := w.snapshot(ctx, db, by, store.KindPreRestore, note)
+	if err != nil {
+		return 0, fmt.Errorf("safety snapshot failed, database unchanged: %w", err)
 	}
 	if err := w.store.RecreateDatabase(ctx, db.Name, db.Owner); err != nil {
-		return fmt.Errorf("recreating database: %w (snapshot #%d has the previous contents)", err, before)
+		return before, fmt.Errorf("recreating database: %w (snapshot #%d has the previous contents)", err, before)
 	}
-	if err := w.exec(ctx, "pg_restore", "--no-owner", "--no-acl", "--single-transaction", "--exit-on-error",
-		"--host="+w.cfg.SocketDir, "--username="+db.Owner, "--dbname="+db.Name, file); err != nil {
-		return fmt.Errorf("restore failed, the database is empty: %w (snapshot #%d has the previous contents)", err, before)
+	args := []string{"--no-owner", "--no-acl", "--host=" + w.cfg.SocketDir, "--username=" + db.Owner, "--dbname=" + db.Name}
+	if strict {
+		args = append(args, "--single-transaction", "--exit-on-error")
 	}
-	w.prune(ctx, db.Name, store.KindPreRestore, snap.ID, before)
-	return nil
+	if err := w.exec(ctx, "pg_restore", append(args, file)...); err != nil {
+		if strict {
+			return before, fmt.Errorf("nothing was loaded, the database is empty: %w (snapshot #%d has the previous contents)", err, before)
+		}
+		// pg_restore exits 1 after skipping failed statements, the rest is loaded
+		return before, store.Warning{Msg: fmt.Sprintf("loaded with errors: %v (snapshot #%d has the previous contents)", err, before)}
+	}
+	return before, nil
 }
 
 func (w *Worker) prune(ctx context.Context, database, kind string, protect ...int64) {

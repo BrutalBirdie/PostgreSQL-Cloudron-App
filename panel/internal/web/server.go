@@ -47,6 +47,8 @@ type Config struct {
 	HBAFile       string
 	PGAdminPath   string // empty when pgAdmin is not bundled
 	SnapshotDir   string
+	UploadDir     string
+	UploadKeep    time.Duration // uploads not marked keep are deleted after this
 	PGBinDir      string
 	MaxSnapshots  int
 }
@@ -60,13 +62,14 @@ type Server struct {
 	oidcMu   sync.Mutex
 	provider *oidc.Provider
 
-	hbaMu sync.Mutex
+	hbaMu    sync.Mutex
+	uploadMu sync.Mutex
 }
 
 func New(cfg Config, st *store.Store, log *slog.Logger) (*Server, error) {
 	s := &Server{cfg: cfg, store: st, log: log, pages: map[string]*template.Template{}}
 	funcs := template.FuncMap{"connURL": s.connURL, "bytes": humanBytes}
-	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error", "database", "restore"} {
+	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error", "database", "restore", "uploads", "import"} {
 		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
 		if err != nil {
 			return nil, err
@@ -96,6 +99,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /snapshots/{id}/restore", s.requireLogin(s.restorePage))
 	mux.Handle("POST /snapshots/{id}/restore", s.requireLogin(s.restoreSnapshot))
 	mux.Handle("POST /snapshots/{id}/delete", s.requireLogin(s.deleteSnapshot))
+
+	mux.Handle("GET /roles/{name}/uploads", s.requireLogin(s.uploadsPage))
+	mux.Handle("POST /roles/{name}/uploads", s.requireLoginStream(s.uploadFile))
+	mux.Handle("POST /uploads/{id}/keep", s.requireLogin(s.keepUpload))
+	mux.Handle("POST /uploads/{id}/delete", s.requireLogin(s.deleteUpload))
+	mux.Handle("GET /uploads/{id}/import", s.requireLogin(s.importPage))
+	mux.Handle("POST /uploads/{id}/import", s.requireLogin(s.importUpload))
 
 	mux.Handle("GET /admin", s.requireAdmin(s.admin))
 	mux.Handle("GET /admin/audit", s.requireAdmin(s.auditLog))
@@ -129,7 +139,13 @@ func sessionFrom(r *http.Request) *store.Session {
 	return sess
 }
 
-func (s *Server) requireLogin(h http.HandlerFunc) http.Handler {
+func (s *Server) requireLogin(h http.HandlerFunc) http.Handler { return s.authed(h, false) }
+
+// requireLoginStream is for multipart uploads: the body is not parsed here and
+// the handler must check the CSRF token itself with validCSRF.
+func (s *Server) requireLoginStream(h http.HandlerFunc) http.Handler { return s.authed(h, true) }
+
+func (s *Server) authed(h http.HandlerFunc, stream bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(sessionCookie)
 		if err != nil {
@@ -148,7 +164,7 @@ func (s *Server) requireLogin(h http.HandlerFunc) http.Handler {
 		}
 		sess.IsAdmin = s.isAdmin(sess.Username, sess.IsAdmin)
 		r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, sess))
-		if r.Method == http.MethodPost && !s.validPost(w, r, sess) {
+		if r.Method == http.MethodPost && !(stream && s.validOrigin(r, sess) || !stream && s.validPost(w, r, sess)) {
 			s.fail(w, r, http.StatusForbidden, "The request could not be verified. Reload the page and try again.")
 			return
 		}
@@ -168,25 +184,37 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.Handler {
 
 // validPost enforces same-origin and the per-session CSRF token on every state change.
 func (s *Server) validPost(w http.ResponseWriter, r *http.Request, sess *store.Session) bool {
-	reject := func(reason string) bool {
-		s.log.Warn("post rejected", "path", r.URL.Path, "user", sess.Username, "reason", reason,
-			"origin", r.Header.Get("Origin"), "sec_fetch_site", r.Header.Get("Sec-Fetch-Site"))
+	if !s.validOrigin(r, sess) {
 		return false
-	}
-	if origin := r.Header.Get("Origin"); origin != "" && origin != s.cfg.Origin {
-		return reject("origin mismatch")
-	}
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
-		return reject("not same-origin")
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := r.ParseForm(); err != nil {
-		return reject("invalid form: " + err.Error())
+		return s.rejectPost(r, sess, "invalid form: "+err.Error())
 	}
-	if subtle.ConstantTimeCompare([]byte(r.PostForm.Get("csrf")), []byte(sess.CSRFToken)) != 1 {
-		return reject("csrf token mismatch")
+	return s.validCSRF(r, sess, r.PostForm.Get("csrf"))
+}
+
+func (s *Server) validOrigin(r *http.Request, sess *store.Session) bool {
+	if origin := r.Header.Get("Origin"); origin != "" && origin != s.cfg.Origin {
+		return s.rejectPost(r, sess, "origin mismatch")
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+		return s.rejectPost(r, sess, "not same-origin")
 	}
 	return true
+}
+
+func (s *Server) validCSRF(r *http.Request, sess *store.Session, token string) bool {
+	if subtle.ConstantTimeCompare([]byte(token), []byte(sess.CSRFToken)) != 1 {
+		return s.rejectPost(r, sess, "csrf token mismatch")
+	}
+	return true
+}
+
+func (s *Server) rejectPost(r *http.Request, sess *store.Session, reason string) bool {
+	s.log.Warn("post rejected", "path", r.URL.Path, "user", sess.Username, "reason", reason,
+		"origin", r.Header.Get("Origin"), "sec_fetch_site", r.Header.Get("Sec-Fetch-Site"))
+	return false
 }
 
 type pageData struct {
@@ -284,7 +312,7 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok\n"))
 }
 
-// PurgeLoop removes expired sessions and abandoned logins.
+// PurgeLoop removes expired sessions, abandoned logins and expired uploads.
 func (s *Server) PurgeLoop(ctx context.Context) {
 	t := time.NewTicker(15 * time.Minute)
 	defer t.Stop()
@@ -292,6 +320,7 @@ func (s *Server) PurgeLoop(ctx context.Context) {
 		if err := s.store.PurgeExpired(ctx, idleTimeout, maxSession); err != nil && ctx.Err() == nil {
 			s.log.Error("purge sessions", "err", err)
 		}
+		s.purgeUploads(ctx)
 		select {
 		case <-ctx.Done():
 			return

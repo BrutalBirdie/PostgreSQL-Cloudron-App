@@ -22,9 +22,18 @@ import (
 
 var (
 	snapshotDir = env("SNAPSHOT_DIR", "/app/data/snapshots")
+	uploadDir   = env("UPLOAD_DIR", "/app/data/uploads")
 	pgBinDir    = env("PG_BIN_DIR", "/usr/lib/postgresql/18/bin")
 	socketDir   = env("PG_SOCKET_DIR", "/var/lib/postgresql/run")
 )
+
+func uploadRetention() time.Duration {
+	n, err := strconv.Atoi(os.Getenv("PG_UPLOAD_RETENTION_DAYS"))
+	if err != nil || n < 1 {
+		n = 8
+	}
+	return time.Duration(n) * 24 * time.Hour
+}
 
 func maxSnapshots() int {
 	n, err := strconv.Atoi(os.Getenv("PG_MAX_SNAPSHOTS"))
@@ -56,7 +65,7 @@ func runWorker(log *slog.Logger) error {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return worker.New(worker.Config{SnapshotDir: snapshotDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots()}, st, log).Run(ctx)
+	return worker.New(worker.Config{SnapshotDir: snapshotDir, UploadDir: uploadDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots()}, st, log).Run(ctx)
 }
 
 func env(key, def string) string {
@@ -152,6 +161,8 @@ func serve(log *slog.Logger) error {
 		HBAFile:       env("HBA_FILE", "/run/pg/hba/pg_hba.conf"),
 		PGAdminPath:   os.Getenv("PGADMIN_PATH"),
 		SnapshotDir:   snapshotDir,
+		UploadDir:     uploadDir,
+		UploadKeep:    uploadRetention(),
 		PGBinDir:      pgBinDir,
 		MaxSnapshots:  maxSnapshots(),
 	}, st, log)

@@ -121,6 +121,33 @@ if [[ "${SCREENSHOTS:-}" == "1" ]]; then
     cp "${work}/shots/"*.png "${root}/screenshots/"
 fi
 
+echo "==> Uploads and import"
+mkdir -p "${work}/files"
+pg "${new_pw}" e2e_bob e2e_bob 'create table imported_marker(v text); insert into imported_marker values ($$from dump$$)' >/dev/null
+docker run --rm --network "container:${app}" -v "${work}/certs:/certs:ro" -e PGPASSWORD="${new_pw}" "${img}" \
+    pg_dump --format=custom "host=pg.test hostaddr=${app_ip} sslmode=verify-full sslrootcert=/certs/tls_cert.pem user=e2e_bob dbname=e2e_bob" > "${work}/files/import me.dump"
+pg "${new_pw}" e2e_bob e2e_bob 'drop table imported_marker' >/dev/null
+printf '\\! touch /tmp/pwned\nselect 1;\n' > "${work}/files/evil.sql"
+head -c 3145728 /dev/urandom > "${work}/files/big.bin"
+chmod -R a+rX "${work}/files"
+browser uploads
+# the File Manager copies with the owner of the parent directory
+docker exec "${app}" install -o cloudron -g postgres -m 0644 /app/data/env.sh /app/data/uploads/e2e_bob/manual.dump
+browser uploads2
+expect "import loaded the dump" "^from dump$" "$(pg "${new_pw}" e2e_bob e2e_bob 'select v from imported_marker')"
+expect "imported objects owned by bob" "^e2e_bob$" "$(pg "${new_pw}" e2e_bob e2e_bob "select tableowner from pg_tables where tablename = 'imported_marker'")"
+expect "plain SQL never executed" "^no$" "$(docker exec "${app}" bash -c 'test -e /tmp/pwned && echo yes || echo no')"
+upload_perms=$(docker exec "${app}" find /app/data/uploads -mindepth 1 -printf '%y %m %u:%g %p\n')
+expect "upload directories setgid, cloudron:postgres" "^$" "$(grep '^d' <<<"${upload_perms}" | grep -v '^d 2750 cloudron:postgres ' || true)"
+expect "panel uploads 0640 cloudron:postgres" "f 640 cloudron:postgres /app/data/uploads/e2e_bob/import_me.dump" "${upload_perms}"
+
+superuser "update uploads set first_seen = now() - interval '9 days'" pgpanel >/dev/null
+docker restart "${app}" >/dev/null
+wait_healthy
+sleep 3
+remaining=$(docker exec "${app}" ls /app/data/uploads/e2e_bob)
+expect "expired uploads deleted" "^import_me.dump$" "${remaining}"
+
 superuser "update schedules set next_run = now() - interval '1 minute'" pgpanel >/dev/null
 sleep 8
 browser bob3

@@ -1,0 +1,27 @@
+{{define "content"}}
+{{$up := .Data.Upload}}
+{{$role := .Data.Role}}
+<p><a href="/roles/{{$role.Name}}/uploads">&larr; Uploads of {{$role.Name}}</a></p>
+<section class="card danger-zone">
+  <h1>Import <code>{{$up.FileName}}</code></h1>
+  {{with $up.FormatErr}}
+  <p class="error">{{.}}</p>
+  {{else}}
+  <dl>
+    <dt>File</dt><dd><code>{{$up.FileName}}</code>, {{bytes $up.SizeBytes}}, {{$up.Format}} format</dd>
+  </dl>
+  <form method="post" action="/uploads/{{$up.ID}}/import" class="grid">
+    <input type="hidden" name="csrf" value="{{.Session.CSRFToken}}">
+    <label>Target database
+      <select name="database">{{range $role.Databases}}<option value="{{.}}"{{if eq . $.Data.Database}} selected{{end}}>{{.}}</option>{{end}}</select>
+    </label>
+    <label class="check"><input type="checkbox" name="strict" checked> All or nothing: stop at the first error</label>
+    <p class="muted">Without it, statements that fail (for example extensions that are not allowed) are skipped and the rest is loaded.</p>
+    <p class="warning">All current data in the target database is replaced and its clients are disconnected. A snapshot of the current state is taken first, so you can go back.
+    Ownership and privileges in the file are ignored, everything belongs to role <code>{{$role.Name}}</code>.</p>
+    <input type="text" name="confirm" placeholder="type the target database name to confirm" required autocomplete="off" aria-label="Type the target database name to confirm">
+    <button type="submit" class="danger">Import</button>
+  </form>
+  {{end}}
+</section>
+{{end}}

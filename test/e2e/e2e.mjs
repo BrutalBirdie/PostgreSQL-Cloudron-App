@@ -175,6 +175,61 @@ const steps = {
         check('screenshots written', fs.readdirSync('/work/shots').length === 3);
     },
 
+    async uploads() {
+        const { page, save } = await session('bob');
+        await page.goto(BASE + '/');
+        await page.click('a:has-text("Uploads and import")');
+        await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
+
+        const upload = async (file) => {
+            await page.setInputFiles('input[type=file]', file);
+            await page.click('form[enctype="multipart/form-data"] button');
+            await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
+        };
+        await upload('/work/files/import me.dump');
+        await upload('/work/files/evil.sql');
+        await upload('/work/files/big.bin');
+        let html = await page.content();
+        check('custom dump listed with sanitized name', html.includes('<code>import_me.dump</code> <span class="tag">custom</span>'));
+        check('plain SQL flagged as not importable', html.includes('plain SQL files cannot be imported'));
+        check('large file accepted by nginx', html.includes('<code>big.bin</code>') && html.includes('3.0 MiB'));
+        check('only importable files have an import button', (await page.locator('form[action$="/import"]').count()) === 1);
+
+        const row = page.locator('tbody tr', { hasText: 'import_me.dump' });
+        state.bobUpload = (await row.locator('form[action$="/import"]').getAttribute('action')).split('/')[2];
+        await row.locator('form[action$="/keep"] button').click();
+        await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
+        check('keep toggled', (await page.locator('tbody tr', { hasText: 'import_me.dump' }).textContent()).includes('kept'));
+
+        await upload('/work/files/import me.dump');
+        check('second upload with the same name is not overwritten', (await page.content()).includes('<code>import_me-1.dump</code>'));
+
+        const token = await csrf(page);
+        const noToken = await page.request.post(BASE + '/roles/e2e_bob/uploads', { multipart: { file: { name: 'x.dump', mimeType: 'application/octet-stream', buffer: Buffer.from('PGDMP') } } });
+        check('upload without csrf rejected', noToken.status() === 403, String(noToken.status()));
+
+        await page.locator('tbody tr', { hasText: 'import_me.dump' }).first().locator('form[action$="/import"] button').click();
+        await page.waitForURL(/\/uploads\/\d+\/import/);
+        await page.selectOption('select[name=database]', 'e2e_bob');
+        await page.fill('input[name=confirm]', 'e2e_bob');
+        await page.click('button:has-text("Import")');
+        await page.waitForURL(BASE + '/databases/e2e_bob');
+        check('import job finished', await waitForJobs(page, BASE + '/databases/e2e_bob'));
+        html = await page.content();
+        check('import job done', html.includes('<td>import</td>') && !html.includes('>failed<'), html.match(/<span class="error">[^<]*/)?.[0] ?? '');
+        check('safety snapshot before import', html.includes('taken before importing import_me.dump'));
+        await save();
+    },
+
+    async uploads2() {
+        const { page, save } = await session('bob');
+        await page.goto(BASE + '/roles/e2e_bob/uploads');
+        const html = await page.content();
+        check('file manager copy picked up', html.includes('<code>manual.dump</code>') && html.includes('by file manager'));
+        check('non-archive from file manager not importable', (await page.locator('tbody tr', { hasText: 'manual.dump' }).locator('form[action$="/import"]').count()) === 0);
+        await save();
+    },
+
     async bob3() {
         const { page, save } = await session('bob');
         await page.goto(BASE + '/databases/e2e_bob');
@@ -201,6 +256,13 @@ const steps = {
         const post = (path, form, headers = {}) => page.request.post(BASE + path, { form, headers, maxRedirects: 0 });
         check('eve: rotate bob password hidden', (await post('/roles/e2e_bob/password', { csrf: token })).status() === 404);
         check('eve: restore bob snapshot hidden', (await post(`/snapshots/${state.bobSnapshot}/restore`, { csrf: token, confirm: 'e2e_bob' })).status() === 404);
+        check('eve: bob uploads page hidden', (await page.goto(BASE + '/roles/e2e_bob/uploads')).status() === 404);
+        check('eve: bob upload import page hidden', (await page.goto(`${BASE}/uploads/${state.bobUpload}/import`)).status() === 404);
+        await page.goto(BASE + '/');
+        check('eve: import bob upload into her database hidden', (await post(`/uploads/${state.bobUpload}/import`, { csrf: token, database: 'e2e_eve', confirm: 'e2e_eve' })).status() === 404);
+        check('eve: delete bob upload hidden', (await post(`/uploads/${state.bobUpload}/delete`, { csrf: token })).status() === 404);
+        const evil = await page.request.post(BASE + '/roles/e2e_bob/uploads', { multipart: { csrf: token, file: { name: 'x.dump', mimeType: 'application/octet-stream', buffer: Buffer.from('PGDMP') } } });
+        check('eve: upload to bob role hidden', evil.status() === 404, String(evil.status()));
         check('eve: create role forbidden', (await post('/admin/roles', { csrf: token, name: 'evil_role' })).status() === 403);
         check('missing csrf rejected', (await post('/roles/e2e_eve/password', {})).status() === 403);
         check('foreign origin rejected', (await post('/roles/e2e_eve/password', { csrf: token }, { Origin: 'https://evil.example' })).status() === 403);

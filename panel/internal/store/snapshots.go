@@ -71,6 +71,8 @@ type Job struct {
 	Kind        string
 	Database    string
 	SnapshotID  *int64
+	UploadID    *int64
+	Strict      bool
 	RequestedBy string
 	Status      string
 	Error       string
@@ -87,15 +89,20 @@ func (s *Store) EnqueueJob(ctx context.Context, kind, database string, snapshotI
 
 func (s *Store) enqueue(ctx context.Context, kind, database string, snapshotID *int64, by string, scheduled bool) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO jobs (kind, database, snapshot_id, requested_by, scheduled) VALUES ($1, $2, $3, $4, $5)`, kind, database, snapshotID, by, scheduled)
+	return asJobActive(err)
+}
+
+// asJobActive maps the one-active-job-per-database index violation to ErrJobActive.
+func asJobActive(err error) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "jobs_one_active" {
 		return ErrJobActive
 	}
 	return err
 }
 
 func (s *Store) ListJobs(ctx context.Context, database string, limit int) ([]Job, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, kind, database, snapshot_id, requested_by, status, error, created_at, finished_at, scheduled
+	rows, err := s.pool.Query(ctx, `SELECT id, kind, database, snapshot_id, upload_id, strict, requested_by, status, error, created_at, finished_at, scheduled
 FROM jobs WHERE database = $1 ORDER BY id DESC LIMIT $2`, database, limit)
 	if err != nil {
 		return nil, err
@@ -105,7 +112,7 @@ FROM jobs WHERE database = $1 ORDER BY id DESC LIMIT $2`, database, limit)
 
 func scanJob(r pgx.CollectableRow) (Job, error) {
 	var j Job
-	err := r.Scan(&j.ID, &j.Kind, &j.Database, &j.SnapshotID, &j.RequestedBy, &j.Status, &j.Error, &j.CreatedAt, &j.FinishedAt, &j.Scheduled)
+	err := r.Scan(&j.ID, &j.Kind, &j.Database, &j.SnapshotID, &j.UploadID, &j.Strict, &j.RequestedBy, &j.Status, &j.Error, &j.CreatedAt, &j.FinishedAt, &j.Scheduled)
 	return j, err
 }
 
@@ -114,7 +121,7 @@ func (s *Store) ClaimJob(ctx context.Context) (*Job, error) {
 	rows, err := s.pool.Query(ctx, `
 UPDATE jobs SET status = 'running'
 WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-RETURNING id, kind, database, snapshot_id, requested_by, status, error, created_at, finished_at, scheduled`)
+RETURNING id, kind, database, snapshot_id, upload_id, strict, requested_by, status, error, created_at, finished_at, scheduled`)
 	if err != nil {
 		return nil, err
 	}
@@ -125,9 +132,17 @@ RETURNING id, kind, database, snapshot_id, requested_by, status, error, created_
 	return &j, err
 }
 
+// Warning marks a job that finished but has something to report.
+type Warning struct{ Msg string }
+
+func (w Warning) Error() string { return w.Msg }
+
 func (s *Store) FinishJob(ctx context.Context, id int64, jobErr error) error {
 	status, msg := "done", ""
-	if jobErr != nil {
+	var warn Warning
+	if errors.As(jobErr, &warn) {
+		msg = warn.Msg
+	} else if jobErr != nil {
 		status, msg = "failed", jobErr.Error()
 	}
 	_, err := s.pool.Exec(ctx, `UPDATE jobs SET status = $2, error = $3, finished_at = now() WHERE id = $1`, id, status, msg)
@@ -236,7 +251,9 @@ func (s *Store) CheckSnapshotTables(ctx context.Context) error {
 	err := s.pool.QueryRow(ctx, `
 SELECT to_regclass('public.schedules') IS NOT NULL
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'snapshots' AND column_name = 'kind')
-   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'scheduled')`).Scan(&ready)
+   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'scheduled')
+   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'strict')
+   AND to_regclass('public.uploads') IS NOT NULL`).Scan(&ready)
 	if err == nil && !ready {
 		err = errors.New("snapshot tables are not migrated yet")
 	}

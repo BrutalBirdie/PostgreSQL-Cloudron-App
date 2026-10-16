@@ -62,7 +62,8 @@
     {{end}}
     </tbody>
   </table>
-  <p class="muted">Restore a <code>.dump</code> elsewhere with <code>pg_restore --no-owner --no-acl -d &lt;database&gt; file.dump</code> (pg_restore 18 or newer).</p>
+  <p class="muted">To load a dump file into this database, use <a href="/roles/{{$db.Owner}}/uploads">uploads and import</a>.
+  Restore a <code>.dump</code> elsewhere with <code>pg_restore --no-owner --no-acl -d &lt;database&gt; file.dump</code> (pg_restore 18 or newer).</p>
 </section>
 
 {{if .Data.Jobs}}
@@ -74,7 +75,7 @@
     {{range .Data.Jobs}}
     <tr>
       <td>{{.CreatedAt.UTC.Format "2006-01-02 15:04:05"}}</td>
-      <td>{{if .Scheduled}}scheduled {{end}}{{.Kind}}{{with .SnapshotID}} of #{{.}}{{end}}</td>
+      <td>{{if .Scheduled}}scheduled {{end}}{{.Kind}}{{with .SnapshotID}} of #{{.}}{{end}}{{if and (eq .Kind "import") (not .Strict)}} (skip errors){{end}}</td>
       <td>{{.RequestedBy}}</td>
       <td>{{.Status}}{{with .Error}}<br><span class="error">{{.}}</span>{{end}}</td>
     </tr>
