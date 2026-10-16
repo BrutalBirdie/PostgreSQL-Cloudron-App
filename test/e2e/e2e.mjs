@@ -17,15 +17,19 @@ function check(name, ok, detail = '') {
 
 const browser = await chromium.launch();
 
+let lastPage = null;
+
 async function session(user) {
     const file = `/work/${user}.json`;
     const ctx = await browser.newContext({ acceptDownloads: true, storageState: fs.existsSync(file) ? file : undefined });
     const page = await ctx.newPage();
+    lastPage = page;
     return { ctx, page, save: () => ctx.storageState({ path: file }) };
 }
 
 async function login(page, user, groups) {
     await page.goto(BASE + '/');
+    if (await page.getByRole('button', { name: `Log out ${user}` }).count()) return;
     await page.getByRole('link', { name: 'Sign in with Cloudron' }).click();
     await page.fill('input[name=username]', user);
     await page.fill('textarea[name=claims]', JSON.stringify({ groups, name: user }));
@@ -77,24 +81,88 @@ const steps = {
 
         const form = page.locator('form[action="/admin/roles"]');
         await form.locator('input[name=name]').fill('e2e_bob');
-        await form.locator('input[name=owner]').fill('bob');
+        const search = form.locator('.principals input');
+        check('owner picker replaces the text field', (await search.count()) === 1 && !(await form.locator('textarea[name=owners]').isVisible()));
+        await search.fill('bbld'); // fuzzy: "Bob Builder"
+        const suggestion = form.locator('.suggestions li').first();
+        await suggestion.waitFor();
+        check('fuzzy search finds bob', (await suggestion.textContent()) === 'User: bob (Bob Builder)', await suggestion.textContent());
+        await search.press('Enter');
+        await search.fill('dbt');
+        await form.locator('.suggestions li', { hasText: 'Group: dbteam' }).click();
+        await search.fill('xyzq');
+        check('no suggestion for nonsense', (await form.locator('.suggestions li').count()) === 0);
+        check('picker fills the owners field', (await form.locator('textarea[name=owners]').inputValue()) === 'user:bob, group:dbteam');
         await form.locator('input[name=conn_limit]').fill('5');
         check('max databases hidden while unchecked', !(await form.locator('input[name=max_databases]').isVisible()));
         await form.locator('input[name=allow_create_db]').check();
         check('max databases shown when checked', await form.locator('input[name=max_databases]').isVisible());
         await form.locator('input[name=max_databases]').fill('2');
         await form.locator('button[type=submit]').click();
-        state.bobPassword = await secretFromPage(page);
-        check('bob role password shown once', state.bobPassword.length === 32);
-        check('connection URL shown', (await page.content()).includes('postgresql://e2e_bob@pg.test:5432/e2e_bob'));
+        await page.waitForURL(BASE + '/admin/roles/e2e_bob');
+        let html = await page.content();
+        check('role page shows the owners', html.includes('user:bob, group:dbteam'));
+        check('no password for the shared role', !html.includes('code class="secret"'));
 
-        await page.goto(BASE + '/admin');
-        await form.locator('input[name=name]').fill('e2e_eve');
-        await form.locator('input[name=owner]').fill('eve');
-        await form.locator('button[type=submit]').click();
-        state.evePassword = await secretFromPage(page);
-        check('eve role created', state.evePassword.length === 32);
+        // without JavaScript the owners field is typed
+        const plain = await browser.newContext({ storageState: undefined, javaScriptEnabled: false });
+        await plain.addCookies((await page.context().cookies()));
+        const noJs = await plain.newPage();
+        await noJs.goto(BASE + '/admin');
+        const plainForm = noJs.locator('form[action="/admin/roles"]');
+        await plainForm.locator('input[name=name]').fill('e2e_eve');
+        await plainForm.locator('textarea[name=owners]').fill('user:nobody');
+        await plainForm.locator('button[type=submit]').click();
+        check('unknown owner rejected', (await noJs.content()).includes('There is no Cloudron user'));
+        await noJs.goto(BASE + '/admin');
+        await plainForm.locator('input[name=name]').fill('e2e_eve');
+        await plainForm.locator('textarea[name=owners]').fill('user:eve');
+        await plainForm.locator('button[type=submit]').click();
+        await noJs.waitForURL(BASE + '/admin/roles/e2e_eve');
+        check('owners typed without JavaScript', (await noJs.content()).includes('user:eve'));
+        await plain.close();
         await save();
+    },
+
+    async bobLogin() {
+        const { page, save } = await session('bob');
+        await login(page, 'bob', []);
+        check('bob has no login yet', (await page.content()).includes('Create my password'));
+        await page.click('form[action="/roles/e2e_bob/password"] button');
+        state.bobPassword = await secretFromPage(page);
+        check('bob login password shown once', state.bobPassword.length === 32);
+        check('connection URL uses the own login', (await page.content()).includes('postgresql://e2e_bob.bob@pg.test:5432/e2e_bob'));
+        await save();
+    },
+
+    async eveLogin() {
+        const { page, save } = await session('eve');
+        await login(page, 'eve', []);
+        await page.click('form[action="/roles/e2e_eve/password"] button');
+        state.evePassword = await secretFromPage(page);
+        check('eve login created', state.evePassword.length === 32 && (await page.content()).includes('e2e_eve.eve'));
+        await save();
+    },
+
+    async carol() {
+        const { page, save } = await session('carol');
+        await login(page, 'carol', []);
+        let html = await page.content();
+        check('carol sees the role through her group', html.includes('Role <code>e2e_bob</code>') && html.includes('group dbteam'));
+        check('carol cannot open the admin page', (await page.goto(BASE + '/admin')).status() === 403);
+        await page.goto(BASE + '/');
+        await page.click('form[action="/roles/e2e_bob/password"] button');
+        state.carolPassword = await secretFromPage(page);
+        check('carol gets her own login', (await page.content()).includes('e2e_bob.carol'));
+        check('carol manages the database', (await page.goto(BASE + '/databases/e2e_bob')).status() === 200);
+        await save();
+    },
+
+    async carolGone() {
+        const { page } = await session('carol');
+        await page.goto(BASE + '/');
+        check('carol no longer sees the role', !(await page.content()).includes('Role <code>e2e_bob</code>'));
+        check('carol no longer opens the database', (await page.goto(BASE + '/databases/e2e_bob')).status() === 404);
     },
 
     async bob1() {
@@ -134,7 +202,7 @@ const steps = {
         const row = page.locator('tbody tr').first();
         state.bobSnapshot = (await row.locator('td').first().textContent()).trim();
         for (const [label, test] of [['Download .dump', (b) => b.subarray(0, 5).toString() === 'PGDMP'],
-            ['Download .sql', (b) => b.toString().includes('CREATE TABLE public.t') && b.toString().includes('COPY public.t')]]) {
+            ['Download .sql', (b) => b.toString().includes('CREATE TABLE "public"."t"') && b.toString().includes('COPY "public"."t"')]]) {
             const [dl] = await Promise.all([page.waitForEvent('download'), row.getByRole('link', { name: label }).click()]);
             const failure = await dl.failure();
             const body = failure ? Buffer.alloc(0) : fs.readFileSync(await dl.path());
@@ -250,13 +318,16 @@ const steps = {
         await page.waitForURL(/\/uploads\/\d+\/import/);
         check('import page shows the check', (await page.content()).includes('matches the checksum your browser calculated'));
         await page.selectOption('select[name=database]', 'e2e_bob');
+        check('safety snapshot checked by default', await page.isChecked('input[name=safety_snapshot]'));
+        await page.uncheck('input[name=safety_snapshot]');
         await page.fill('input[name=confirm]', 'e2e_bob');
         await page.click('button:has-text("Import")');
         await page.waitForURL(BASE + '/databases/e2e_bob');
         check('import job finished', await waitForJobs(page, BASE + '/databases/e2e_bob'));
         html = await page.content();
-        check('import job done', html.includes('<td>import</td>') && !html.includes('>failed<'), html.match(/<span class="error">[^<]*/)?.[0] ?? '');
-        check('safety snapshot before import', html.includes('taken before importing import_me.dump'));
+        const newest = await page.locator('section', { hasText: 'Recent jobs' }).locator('tbody tr').first().innerHTML();
+        check('import job done without safety snapshot', newest.includes('import (without safety snapshot)') && newest.includes('done'), newest.slice(0, 300));
+        check('no safety snapshot taken', !html.includes('taken before importing import_me.dump'));
         await save();
     },
 
@@ -428,6 +499,11 @@ const steps = {
         await page.click('.danger-zone button');
         await page.waitForLoadState();
         check('admin returns to /admin after deleting another user database', page.url() === BASE + '/admin', page.url());
+        await page.goto(BASE + '/admin/roles/e2e_eve');
+        check('role page lists the login', (await page.content()).includes('<code>e2e_eve.eve</code>'));
+        await page.click('form[action="/admin/roles/e2e_eve/logins/e2e_eve.eve/revoke"] button');
+        await page.waitForURL(BASE + '/admin/roles/e2e_eve');
+        check('revoked login marked', (await page.content()).includes('being removed'));
         const del = page.locator('form[action="/admin/roles/e2e_eve/delete"]');
         await del.locator('input[name=confirm]').fill('e2e_eve');
         await del.locator('button').click();
@@ -465,6 +541,10 @@ try {
     await steps[step]();
 } catch (e) {
     check('step completed without exception', false, e.message.split('\n')[0]);
+    if (lastPage) {
+        fs.writeFileSync(`/work/fail-${step}.html`, `<!-- ${lastPage.url()} -->\n` + (await lastPage.content().catch(() => '')));
+        console.log(`       page saved to fail-${step}.html (${lastPage.url()})`);
+    }
 }
 fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
 await browser.close();
