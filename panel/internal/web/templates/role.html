@@ -1,0 +1,63 @@
+{{define "content"}}
+{{$csrf := .Session.CSRFToken}}
+{{$role := .Data.Role}}
+<p><a href="/admin">&larr; Admin</a></p>
+<h1>Role <code>{{$role.Name}}</code></h1>
+<p class="muted">Databases: {{range $role.Databases}}<a href="/databases/{{.}}"><code>{{.}}</code></a> {{else}}none{{end}}</p>
+
+<section class="card">
+  <h2>Owners and limits</h2>
+  <form method="post" action="/admin/roles/{{$role.Name}}/update" class="grid">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label>Owners (users and groups)
+      <textarea name="owners" rows="2" data-principals spellcheck="false" placeholder="user:anna, group:developers">{{.Data.OwnersText}}</textarea>
+    </label>
+    <label>Connection limit per login <input type="number" name="conn_limit" value="{{$role.ConnLimit}}" min="1" max="1000"></label>
+    <div class="reveal">
+      <label class="check"><input type="checkbox" name="allow_create_db"{{if $role.MaxDatabases}} checked{{end}}> Allow the owners to create databases</label>
+      <label class="when-checked">Maximum databases for this role, existing ones included <input type="number" name="max_databases" value="{{if $role.MaxDatabases}}{{$role.MaxDatabases}}{{else}}3{{end}}" min="1" max="100"></label>
+    </div>
+    <button type="submit">Save</button>
+  </form>
+  <p class="muted">Logins of users who are no longer an owner, directly or through a group, are removed within a minute.</p>
+</section>
+
+<section class="card">
+  <h2>Logins</h2>
+  <table>
+    <thead><tr><th>Login</th><th>User</th><th>Password set (UTC)</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Logins}}
+    <tr>
+      <td><code>{{.LoginRole}}</code></td>
+      <td>{{.Username}}</td>
+      <td>{{.RotatedAt.UTC.Format "2006-01-02 15:04"}}</td>
+      <td>{{if .Revoked}}<span class="muted">being removed</span>{{else}}
+        <form method="post" action="/admin/roles/{{$role.Name}}/logins/{{.LoginRole}}/revoke" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <button type="submit" class="secondary">Revoke</button>
+        </form>{{end}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="4">No owner has created a login yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+
+<section class="card danger-zone">
+  <h2>Danger zone</h2>
+  <div class="danger-row">
+    <div>
+      <strong>Delete this role</strong>
+      <p class="muted">Removes the role and all its logins. Delete its databases first.</p>
+    </div>
+    <form method="post" action="/admin/roles/{{$role.Name}}/delete" class="inline">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <input type="text" name="confirm" placeholder="type {{$role.Name}} to confirm" required autocomplete="off" aria-label="Type {{$role.Name}} to confirm deletion">
+      <button type="submit" class="danger">Delete role</button>
+    </form>
+  </div>
+</section>
+<script src="/static/principals.js"></script>
+{{end}}

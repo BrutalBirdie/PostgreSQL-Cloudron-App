@@ -4,7 +4,8 @@
 {{if .Data.Busy}}<meta http-equiv="refresh" content="5">{{end}}
 <p><a href="/">&larr; My databases</a></p>
 <h1>Database <code>{{$db.Name}}</code></h1>
-<p class="muted">Owned by role <code>{{$db.Owner}}</code>. The newest {{.Data.MaxSnapshots}} manual, {{.Data.MaxSnapshots}} scheduled and {{.Data.MaxSnapshots}} before-restore snapshots are kept, the oldest of each type are deleted automatically.</p>
+<p class="muted">Owned by role <code>{{$db.Owner}}</code>. The newest {{.Data.MaxSnapshots}} manual, {{.Data.MaxSnapshots}} scheduled and {{.Data.MaxSnapshots}} before-restore snapshots are kept, the oldest of each type are deleted automatically.
+Snapshots are stored on this server and are not part of Cloudron backups.</p>
 
 <section class="card">
   <h2>Automatic snapshots</h2>
@@ -70,7 +71,7 @@
     </tbody>
   </table>
   <p class="muted">To load a dump file into this database, use <a href="/roles/{{$db.Owner}}/uploads">uploads and import</a>.
-  Restore a <code>.dump</code> elsewhere with <code>pg_restore --no-owner --no-acl -d &lt;database&gt; file.dump</code> (pg_restore 18 or newer).</p>
+  Restore a <code>.dump</code> elsewhere with <code>pg_restore --no-owner --no-acl -d &lt;database&gt; file.dump</code> (pg_restore 17 or newer).</p>
 </section>
 
 {{if .Data.Jobs}}
@@ -82,7 +83,7 @@
     {{range .Data.Jobs}}
     <tr>
       <td>{{.CreatedAt.UTC.Format "2006-01-02 15:04:05"}}</td>
-      <td>{{if .Scheduled}}scheduled {{end}}{{.Kind}}{{with .SnapshotID}} of #{{.}}{{end}}{{if and (eq .Kind "import") (not .Strict)}} (skip errors){{end}}</td>
+      <td>{{if .Scheduled}}scheduled {{end}}{{.Kind}}{{with .SnapshotID}} of #{{.}}{{end}}{{if and (eq .Kind "import") (not .Strict)}} (skip errors){{end}}{{if and (or (eq .Kind "import") (eq .Kind "restore")) (not .Safety)}} (without safety snapshot){{end}}</td>
       <td>{{.RequestedBy}}</td>
       <td>{{.Status}}{{if .Active}}{{with .Step}}<br><span class="muted">{{.}}</span>{{end}}{{with .Progress}} {{.}}%{{end}}{{end}}{{with .Error}}<br><span class="error">{{.}}</span>{{end}}</td>
     </tr>

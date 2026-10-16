@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"pgpanel/internal/access"
+	"pgpanel/internal/directory"
 	"pgpanel/internal/names"
 	"pgpanel/internal/schedule"
 	"pgpanel/internal/store"
@@ -25,6 +27,8 @@ import (
 )
 
 type Config struct {
+	Directory    *directory.Client
+	Admins       access.Admins
 	SnapshotDir  string
 	UploadDir    string
 	SocketDir    string
@@ -69,6 +73,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		return err
 	}
 	w.removePartials()
+	w.reconcileSnapshots(ctx)
 	if err := w.store.DropAllInternal(ctx); err != nil {
 		w.log.Error("dropping leftover staging databases", "err", err)
 	}
@@ -137,12 +142,12 @@ func (w *Worker) run(ctx context.Context, job *store.Job) error {
 		if job.SnapshotID == nil {
 			return errors.New("restore job without snapshot")
 		}
-		return w.restore(ctx, job.ID, db, *job.SnapshotID, job.RequestedBy)
+		return w.restore(ctx, job.ID, db, *job.SnapshotID, job.Safety, job.RequestedBy)
 	case "import":
 		if job.UploadID == nil {
 			return errors.New("import job without upload")
 		}
-		return w.importUpload(ctx, job.ID, db, *job.UploadID, job.Strict, job.RequestedBy)
+		return w.importUpload(ctx, job.ID, db, *job.UploadID, job.Strict, job.Safety, job.RequestedBy)
 	}
 	return fmt.Errorf("unknown job kind %q", job.Kind)
 }
@@ -163,7 +168,9 @@ func (w *Worker) snapshot(ctx context.Context, db *store.Database, by, kind, not
 	if kind == store.KindPreRestore {
 		step = "Taking a safety snapshot of the current data"
 	}
-	if err := w.dumpDatabase(ctx, db.Name, step, tmp, "--format=custom", "--no-owner", "--no-acl",
+	// quoted identifiers keep dumps restorable when a later PostgreSQL adds keywords
+	// https://github.com/taigaio/taiga-back/issues/265
+	if err := w.dumpDatabase(ctx, db.Name, step, tmp, "--format=custom", "--compress=zstd", "--quote-all-identifiers", "--no-owner", "--no-acl",
 		"--host="+w.cfg.SocketDir, "--username="+db.Owner, "--dbname="+db.Name); err != nil {
 		return 0, err
 	}
@@ -203,6 +210,44 @@ func ensureSharedDir(dir string) error {
 	return nil
 }
 
+// reconcileSnapshots matches snapshot rows and files. Snapshots are not part of
+// Cloudron backups: after a restore or clone rows can point to missing files,
+// and files of snapshots taken after the backup have no row.
+func (w *Worker) reconcileSnapshots(ctx context.Context) {
+	known, err := w.store.AllSnapshotFiles(ctx)
+	if err != nil {
+		w.log.Error("listing snapshots", "err", err)
+		return
+	}
+	for file, id := range known {
+		path, err := Resolve(w.cfg.SnapshotDir, file)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			if _, err := w.store.DeleteSnapshot(ctx, id); err != nil {
+				w.log.Error("deleting snapshot without file", "id", id, "err", err)
+				continue
+			}
+			w.log.Info("snapshot file is gone, removed its entry", "id", id, "file", file)
+		}
+	}
+	dumps, _ := filepath.Glob(filepath.Join(w.cfg.SnapshotDir, "*", "*.dump"))
+	for _, path := range dumps {
+		rel, err := filepath.Rel(w.cfg.SnapshotDir, path)
+		if err != nil {
+			continue
+		}
+		if _, ok := known[rel]; !ok {
+			if err := os.Remove(path); err != nil {
+				w.log.Error("removing snapshot file without entry", "file", rel, "err", err)
+				continue
+			}
+			w.log.Info("removed snapshot file without entry", "file", rel)
+		}
+	}
+}
+
 // removePartials deletes dumps left behind by a pg_dump that was interrupted by a restart.
 func (w *Worker) removePartials() {
 	partials, _ := filepath.Glob(filepath.Join(w.cfg.SnapshotDir, "*", "*.partial"))
@@ -213,7 +258,7 @@ func (w *Worker) removePartials() {
 	}
 }
 
-func (w *Worker) restore(ctx context.Context, jobID int64, db *store.Database, snapshotID int64, by string) error {
+func (w *Worker) restore(ctx context.Context, jobID int64, db *store.Database, snapshotID int64, safety bool, by string) error {
 	snap, err := w.store.GetSnapshot(ctx, snapshotID)
 	if err != nil {
 		return err
@@ -230,14 +275,14 @@ func (w *Worker) restore(ctx context.Context, jobID int64, db *store.Database, s
 		return fmt.Errorf("snapshot file is not readable: %w", err)
 	}
 
-	before, err := w.replaceWith(ctx, jobID, db, file, true, by, fmt.Sprintf("taken before restoring snapshot #%d", snap.ID))
+	before, err := w.replaceWith(ctx, jobID, db, file, true, safety, by, fmt.Sprintf("taken before restoring snapshot #%d", snap.ID))
 	if before != 0 {
 		w.prune(ctx, db.Name, store.KindPreRestore, snap.ID, before)
 	}
 	return err
 }
 
-func (w *Worker) importUpload(ctx context.Context, jobID int64, db *store.Database, uploadID int64, strict bool, by string) error {
+func (w *Worker) importUpload(ctx context.Context, jobID int64, db *store.Database, uploadID int64, strict, safety bool, by string) error {
 	up, err := w.store.GetUpload(ctx, uploadID)
 	if err != nil {
 		return fmt.Errorf("upload #%d: %w", uploadID, err)
@@ -266,7 +311,7 @@ func (w *Worker) importUpload(ctx context.Context, jobID int64, db *store.Databa
 	if err := w.exec(ctx, "pg_restore", "--list", file); err != nil {
 		return fmt.Errorf("file is not a readable pg_dump archive: %w", err)
 	}
-	before, err := w.replaceWith(ctx, jobID, db, file, strict, by, fmt.Sprintf("taken before importing %s", up.FileName))
+	before, err := w.replaceWith(ctx, jobID, db, file, strict, safety, by, fmt.Sprintf("taken before importing %s", up.FileName))
 	if before != 0 {
 		w.prune(ctx, db.Name, store.KindPreRestore, before)
 	}
@@ -277,10 +322,15 @@ func (w *Worker) importUpload(ctx context.Context, jobID int64, db *store.Databa
 // a new staging database and then swaps it in. The current database stays
 // online and unchanged until the swap. It returns the safety snapshot id once
 // it exists.
-func (w *Worker) replaceWith(ctx context.Context, jobID int64, db *store.Database, file string, strict bool, by, note string) (int64, error) {
-	before, err := w.snapshot(ctx, db, by, store.KindPreRestore, note)
-	if err != nil {
-		return 0, fmt.Errorf("safety snapshot failed, database unchanged: %w", err)
+func (w *Worker) replaceWith(ctx context.Context, jobID int64, db *store.Database, file string, strict, safety bool, by, note string) (int64, error) {
+	var before int64
+	previous := ""
+	if safety {
+		var err error
+		if before, err = w.snapshot(ctx, db, by, store.KindPreRestore, note); err != nil {
+			return 0, fmt.Errorf("safety snapshot failed, database unchanged: %w", err)
+		}
+		previous = fmt.Sprintf(" (snapshot #%d has the previous contents)", before)
 	}
 	staging := store.StagingName(jobID)
 	report(ctx, -1, "Creating a new database to load into, the current one stays online")
@@ -298,7 +348,7 @@ func (w *Worker) replaceWith(ctx context.Context, jobID int64, db *store.Databas
 			return before, fmt.Errorf("nothing changed, the database still has its previous contents: %w", err)
 		}
 		// pg_restore exits 1 after skipping failed statements, the rest is loaded
-		warning = store.Warning{Msg: fmt.Sprintf("loaded with errors: %v (snapshot #%d has the previous contents)", err, before)}
+		warning = store.Warning{Msg: fmt.Sprintf("loaded with errors: %v%s", err, previous)}
 	}
 	report(ctx, -1, "Switching to the new database")
 	if err := w.store.SwapStaging(ctx, db.Name, jobID); err != nil {

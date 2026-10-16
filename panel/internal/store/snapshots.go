@@ -73,6 +73,7 @@ type Job struct {
 	SnapshotID  *int64
 	UploadID    *int64
 	Strict      bool
+	Safety      bool // take a safety snapshot before a restore or import
 	Progress    *int // percent, nil when unknown
 	Step        string
 	StartedAt   *time.Time
@@ -86,12 +87,17 @@ type Job struct {
 
 func (j Job) Active() bool { return j.Status == "queued" || j.Status == "running" }
 
-func (s *Store) EnqueueJob(ctx context.Context, kind, database string, snapshotID *int64, by string) error {
-	return s.enqueue(ctx, kind, database, snapshotID, by, false)
+func (s *Store) EnqueueSnapshot(ctx context.Context, database, by string) error {
+	return s.enqueue(ctx, "snapshot", database, nil, by, false, true)
 }
 
-func (s *Store) enqueue(ctx context.Context, kind, database string, snapshotID *int64, by string, scheduled bool) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO jobs (kind, database, snapshot_id, requested_by, scheduled) VALUES ($1, $2, $3, $4, $5)`, kind, database, snapshotID, by, scheduled)
+func (s *Store) EnqueueRestore(ctx context.Context, database string, snapshotID int64, safetySnapshot bool, by string) error {
+	return s.enqueue(ctx, "restore", database, &snapshotID, by, false, safetySnapshot)
+}
+
+func (s *Store) enqueue(ctx context.Context, kind, database string, snapshotID *int64, by string, scheduled, safetySnapshot bool) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO jobs (kind, database, snapshot_id, requested_by, scheduled, safety_snapshot) VALUES ($1, $2, $3, $4, $5, $6)`,
+		kind, database, snapshotID, by, scheduled, safetySnapshot)
 	return asJobActive(err)
 }
 
@@ -105,7 +111,7 @@ func asJobActive(err error) error {
 }
 
 func (s *Store) ListJobs(ctx context.Context, database string, limit int) ([]Job, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, kind, database, snapshot_id, upload_id, strict, progress, progress_step, started_at, requested_by, status, error, created_at, finished_at, scheduled
+	rows, err := s.pool.Query(ctx, `SELECT id, kind, database, snapshot_id, upload_id, strict, safety_snapshot, progress, progress_step, started_at, requested_by, status, error, created_at, finished_at, scheduled
 FROM jobs WHERE database = $1 ORDER BY id DESC LIMIT $2`, database, limit)
 	if err != nil {
 		return nil, err
@@ -116,7 +122,7 @@ FROM jobs WHERE database = $1 ORDER BY id DESC LIMIT $2`, database, limit)
 func scanJob(r pgx.CollectableRow) (Job, error) {
 	var j Job
 	var progress *int16
-	err := r.Scan(&j.ID, &j.Kind, &j.Database, &j.SnapshotID, &j.UploadID, &j.Strict, &progress, &j.Step, &j.StartedAt, &j.RequestedBy, &j.Status, &j.Error, &j.CreatedAt, &j.FinishedAt, &j.Scheduled)
+	err := r.Scan(&j.ID, &j.Kind, &j.Database, &j.SnapshotID, &j.UploadID, &j.Strict, &j.Safety, &progress, &j.Step, &j.StartedAt, &j.RequestedBy, &j.Status, &j.Error, &j.CreatedAt, &j.FinishedAt, &j.Scheduled)
 	if progress != nil {
 		p := int(*progress)
 		j.Progress = &p
@@ -129,7 +135,7 @@ func (s *Store) ClaimJob(ctx context.Context) (*Job, error) {
 	rows, err := s.pool.Query(ctx, `
 UPDATE jobs SET status = 'running', started_at = now()
 WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-RETURNING id, kind, database, snapshot_id, upload_id, strict, progress, progress_step, started_at, requested_by, status, error, created_at, finished_at, scheduled`)
+RETURNING id, kind, database, snapshot_id, upload_id, strict, safety_snapshot, progress, progress_step, started_at, requested_by, status, error, created_at, finished_at, scheduled`)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +355,8 @@ SELECT to_regclass('public.schedules') IS NOT NULL
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'snapshots' AND column_name = 'kind')
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'scheduled')
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'strict')
-   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'started_at')`).Scan(&ready)
+   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'safety_snapshot')
+   AND to_regclass('public.role_logins') IS NOT NULL AND to_regclass('public.settings') IS NOT NULL`).Scan(&ready)
 	if err == nil && !ready {
 		err = errors.New("snapshot tables are not migrated yet")
 	}
@@ -407,5 +414,24 @@ func (s *Store) SetNextRun(ctx context.Context, database string, next time.Time)
 // EnqueueScheduled adds a scheduled snapshot job. A run is skipped, not queued
 // twice, when a job for the database is still active.
 func (s *Store) EnqueueScheduled(ctx context.Context, database string) error {
-	return s.enqueue(ctx, "snapshot", database, nil, "schedule", true)
+	return s.enqueue(ctx, "snapshot", database, nil, "schedule", true, true)
+}
+
+// AllSnapshotFiles maps every stored snapshot file to its id, for reconciling
+// with the files on disk.
+func (s *Store) AllSnapshotFiles(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT file, id FROM snapshots`)
+	if err != nil {
+		return nil, err
+	}
+	files := map[string]int64{}
+	for rows.Next() {
+		var f string
+		var id int64
+		if err := rows.Scan(&f, &id); err != nil {
+			return nil, err
+		}
+		files[f] = id
+	}
+	return files, rows.Err()
 }

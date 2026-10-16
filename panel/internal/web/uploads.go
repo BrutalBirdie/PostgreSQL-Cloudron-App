@@ -26,7 +26,7 @@ func (s *Server) authorizeRole(r *http.Request, name string) (*store.Role, error
 	if err != nil {
 		return nil, err
 	}
-	if !canManage(sessionFrom(r), role) {
+	if !canManage(r, role) {
 		return nil, store.ErrNotFound
 	}
 	return role, nil
@@ -462,11 +462,12 @@ func (s *Server) importUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	strict := r.PostForm.Get("strict") == "on"
-	if err := s.store.EnqueueImport(r.Context(), db.Name, up.ID, strict, sessionFrom(r).Username); err != nil {
+	safety := r.PostForm.Get("safety_snapshot") == "on"
+	if err := s.store.EnqueueImport(r.Context(), db.Name, up.ID, strict, safety, sessionFrom(r).Username); err != nil {
 		s.userError(w, r, err)
 		return
 	}
-	s.audit(r, "database.import", db.Name, fmt.Sprintf("file=%s strict=%t", up.FileName, strict))
+	s.audit(r, "database.import", db.Name, fmt.Sprintf("file=%s strict=%t safety_snapshot=%t", up.FileName, strict, safety))
 	http.Redirect(w, r, "/databases/"+db.Name, http.StatusSeeOther)
 }
 

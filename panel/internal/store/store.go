@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"pgpanel/internal/access"
 	"pgpanel/internal/names"
 )
 
@@ -77,7 +78,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
 	if _, err = s.pool.Exec(ctx, migrateSnapshots); err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, migrateUploads)
+	if _, err = s.pool.Exec(ctx, migrateUploads); err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrateAccess)
 	return err
 }
 
@@ -177,16 +181,28 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) 
 
 type Role struct {
 	Name         string
-	ConnLimit    int
-	Owner        string
-	MaxDatabases int // databases the owner may have in total via self-service, 0 disables it
+	ConnLimit    int // applied to every login of the role
+	Owners       []access.Principal
+	MaxDatabases int // databases the owners may have in total via self-service, 0 disables it
 	Databases    []string
 }
 
+func (r Role) OwnerUsers() []access.Principal  { return r.ownersOf(access.KindUser) }
+func (r Role) OwnerGroups() []access.Principal { return r.ownersOf(access.KindGroup) }
+
+func (r Role) ownersOf(kind string) []access.Principal {
+	var out []access.Principal
+	for _, p := range r.Owners {
+		if p.Kind == kind {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 type Database struct {
-	Name      string
-	Owner     string // owner role
-	OwnerUser string // Cloudron user of the owner role, only set by the web layer
+	Name  string
+	Owner string // owner role
 }
 
 // tenantRoles is the only set of roles the panel ever touches. pgpanel is a
@@ -198,33 +214,39 @@ JOIN pg_roles g ON g.oid = m.roleid AND g.rolname = 'tenants'
 WHERE r.rolname <> 'pgpanel'`
 
 func (s *Store) ListRoles(ctx context.Context) ([]Role, error) {
+	owners, err := s.roleOwners(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, `
-SELECT r.rolname, r.rolconnlimit, coalesce(o.owner, ''), coalesce(o.max_databases, 0),
+SELECT r.rolname, r.rolconnlimit, coalesce(o.max_databases, 0),
        coalesce(array_agg(d.datname ORDER BY d.datname) FILTER (WHERE d.datname IS NOT NULL), '{}')
 FROM pg_roles r
 LEFT JOIN role_owners o ON o.role_name = r.rolname
 LEFT JOIN pg_database d ON d.datdba = r.oid AND NOT starts_with(d.datname, '`+InternalPrefix+`')
 WHERE r.rolname IN (`+tenantRoles+`)
-GROUP BY r.rolname, r.rolconnlimit, o.owner, o.max_databases
+GROUP BY r.rolname, r.rolconnlimit, o.max_databases
 ORDER BY r.rolname`)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Role, error) {
 		var role Role
-		err := r.Scan(&role.Name, &role.ConnLimit, &role.Owner, &role.MaxDatabases, &role.Databases)
+		err := r.Scan(&role.Name, &role.ConnLimit, &role.MaxDatabases, &role.Databases)
+		role.Owners = owners[role.Name]
 		return role, err
 	})
 }
 
-func (s *Store) RolesOwnedBy(ctx context.Context, user string) ([]Role, error) {
+// RolesOwnedBy lists the roles the member owns by name or through a group.
+func (s *Store) RolesOwnedBy(ctx context.Context, m access.Member) ([]Role, error) {
 	all, err := s.ListRoles(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var mine []Role
 	for _, r := range all {
-		if r.Owner == user {
+		if access.Owns(r.Owners, m) {
 			mine = append(mine, r)
 		}
 	}
@@ -272,7 +294,9 @@ func (s *Store) GetDatabase(ctx context.Context, name string) (*Database, error)
 	return nil, ErrNotFound
 }
 
-func (s *Store) CreateRole(ctx context.Context, name, verifier string, connLimit int, owner string, maxDatabases int) error {
+// CreateRole creates a shared role without password: people connect with
+// their own login (SetLoginPassword), the worker through the peer map.
+func (s *Store) CreateRole(ctx context.Context, name string, connLimit int, owners []access.Principal, maxDatabases int) error {
 	if err := names.Validate(name); err != nil {
 		return err
 	}
@@ -281,38 +305,40 @@ func (s *Store) CreateRole(ctx context.Context, name, verifier string, connLimit
 		return err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT %d IN ROLE tenants PASSWORD %s`,
-		ident(name), connLimit, literal(verifier)))
+	_, err = tx.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT %d IN ROLE tenants PASSWORD NULL`,
+		ident(name), connLimit))
 	if err != nil {
 		return err
 	}
-	if err := setOwner(ctx, tx, name, owner, maxDatabases); err != nil {
+	if err := setOwners(ctx, tx, name, owners, maxDatabases); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-func (s *Store) SetPassword(ctx context.Context, name, verifier string) error {
+func setOwners(ctx context.Context, tx pgx.Tx, role string, owners []access.Principal, maxDatabases int) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM role_access WHERE role_name = $1`, role); err != nil {
+		return err
+	}
+	for _, p := range owners {
+		if _, err := tx.Exec(ctx, `INSERT INTO role_access (role_name, kind, principal_id, display) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+			role, p.Kind, p.ID, p.Display); err != nil {
+			return err
+		}
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO role_owners (role_name, max_databases) VALUES ($1, $2)
+ON CONFLICT (role_name) DO UPDATE SET max_databases = EXCLUDED.max_databases`, role, maxDatabases)
+	return err
+}
+
+// UpdateRole replaces owners and limits. The connection limit applies to every
+// login of the role; the worker revokes logins of users who lost access.
+func (s *Store) UpdateRole(ctx context.Context, name string, owners []access.Principal, connLimit, maxDatabases int) error {
 	if _, err := s.GetRole(ctx, name); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s PASSWORD %s`, ident(name), literal(verifier)))
-	return err
-}
-
-func setOwner(ctx context.Context, tx pgx.Tx, role, owner string, maxDatabases int) error {
-	var err error
-	if owner == "" {
-		_, err = tx.Exec(ctx, `DELETE FROM role_owners WHERE role_name = $1`, role)
-	} else {
-		_, err = tx.Exec(ctx, `INSERT INTO role_owners (role_name, owner, max_databases) VALUES ($1, $2, $3)
-ON CONFLICT (role_name) DO UPDATE SET owner = EXCLUDED.owner, max_databases = EXCLUDED.max_databases`, role, owner, maxDatabases)
-	}
-	return err
-}
-
-func (s *Store) UpdateRole(ctx context.Context, name, owner string, connLimit, maxDatabases int) error {
-	if _, err := s.GetRole(ctx, name); err != nil {
+	logins, err := s.ListLogins(ctx, name)
+	if err != nil {
 		return err
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -323,7 +349,15 @@ func (s *Store) UpdateRole(ctx context.Context, name, owner string, connLimit, m
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s CONNECTION LIMIT %d`, ident(name), connLimit)); err != nil {
 		return err
 	}
-	if err := setOwner(ctx, tx, name, owner, maxDatabases); err != nil {
+	for _, l := range logins {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s CONNECTION LIMIT %d`, ident(l.LoginRole), connLimit)); err != nil {
+			return err
+		}
+	}
+	if err := setOwners(ctx, tx, name, owners, maxDatabases); err != nil {
+		return err
+	}
+	if err := requestAccessSync(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -337,11 +371,30 @@ func (s *Store) DropRole(ctx context.Context, name string) error {
 	if len(role.Databases) > 0 {
 		return fmt.Errorf("%w: %s", ErrHasDatabases, strings.Join(role.Databases, ", "))
 	}
-	if _, err := s.pool.Exec(ctx, fmt.Sprintf(`DROP ROLE %s`, ident(name))); err != nil {
+	logins, err := s.ListLogins(ctx, name)
+	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `DELETE FROM role_owners WHERE role_name = $1`, name)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// the role owns no database, so its logins cannot own objects anywhere
+	for _, l := range logins {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`DROP ROLE IF EXISTS %s`, ident(l.LoginRole))); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`DROP ROLE %s`, ident(name))); err != nil {
+		return err
+	}
+	for _, sql := range []string{`DELETE FROM role_owners WHERE role_name = $1`, `DELETE FROM role_access WHERE role_name = $1`, `DELETE FROM role_logins WHERE role_name = $1`} {
+		if _, err := tx.Exec(ctx, sql, name); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // asRole runs fn on a dedicated connection with SET ROLE, because database

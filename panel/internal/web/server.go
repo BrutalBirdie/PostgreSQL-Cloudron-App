@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/oauth2"
 
+	"pgpanel/internal/access"
+	"pgpanel/internal/directory"
 	"pgpanel/internal/names"
 	"pgpanel/internal/store"
 )
@@ -41,8 +43,8 @@ type Config struct {
 	Issuer        string
 	ClientID      string
 	ClientSecret  string
-	AdminGroup    string
-	Admins        []string // Cloudron usernames that are always admins
+	Directory     *directory.Client // nil without the SCIM addon
+	Admins        access.Admins
 	AllowlistFile string
 	HBAFile       string
 	PGAdminPath   string // empty when pgAdmin is not bundled
@@ -70,7 +72,7 @@ type Server struct {
 func New(cfg Config, st *store.Store, log *slog.Logger) (*Server, error) {
 	s := &Server{cfg: cfg, store: st, log: log, pages: map[string]*template.Template{}, hashWake: make(chan struct{}, 1)}
 	funcs := template.FuncMap{"connURL": s.connURL, "bytes": humanBytes}
-	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error", "database", "restore", "uploads", "import"} {
+	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error", "database", "restore", "uploads", "import", "role"} {
 		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
 		if err != nil {
 			return nil, err
@@ -90,7 +92,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("GET /{$}", s.requireLogin(s.home))
 	mux.Handle("POST /logout", s.requireLogin(s.logout))
-	mux.Handle("POST /roles/{name}/password", s.requireLogin(s.rotatePassword))
+	mux.Handle("POST /roles/{name}/password", s.requireLogin(s.setMyPassword))
 	mux.Handle("POST /roles/{name}/databases", s.requireLogin(s.createOwnDatabase))
 	mux.Handle("POST /databases/{name}/delete", s.requireLogin(s.deleteDatabase))
 	mux.Handle("GET /databases/{name}", s.requireLogin(s.databasePage))
@@ -113,7 +115,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /admin/audit", s.requireAdmin(s.auditLog))
 	mux.Handle("POST /admin/allowlist", s.requireAdmin(s.saveAllowlist))
 	mux.Handle("POST /admin/roles", s.requireAdmin(s.createRole))
+	mux.Handle("GET /admin/principals", s.requireAdmin(s.principals))
+	mux.Handle("GET /admin/roles/{name}", s.requireAdmin(s.rolePage))
 	mux.Handle("POST /admin/roles/{name}/update", s.requireAdmin(s.updateRole))
+	mux.Handle("POST /admin/roles/{name}/logins/{login}/revoke", s.requireAdmin(s.revokeLogin))
 	mux.Handle("POST /admin/roles/{name}/delete", s.requireAdmin(s.deleteRole))
 	mux.Handle("POST /admin/databases", s.requireAdmin(s.createDatabase))
 	return securityHeaders(mux)
@@ -165,8 +170,15 @@ func (s *Server) authed(h http.HandlerFunc, stream bool) http.Handler {
 			s.internalError(w, r, err)
 			return
 		}
-		sess.IsAdmin = s.isAdmin(sess.Username, sess.IsAdmin)
-		r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, sess))
+		member, ok := s.resolveMember(r.Context(), sess)
+		if !ok {
+			s.store.DeleteSession(r.Context(), c.Value)
+			http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+			s.fail(w, r, http.StatusForbidden, "Your Cloudron account no longer has access to this app.")
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxKey{}, sess)
+		r = r.WithContext(context.WithValue(ctx, memberKey{}, member))
 		if r.Method == http.MethodPost && !(stream && s.validOrigin(r, sess) || !stream && s.validPost(w, r, sess)) {
 			s.fail(w, r, http.StatusForbidden, "The request could not be verified. Reload the page and try again.")
 			return
@@ -178,7 +190,7 @@ func (s *Server) authed(h http.HandlerFunc, stream bool) http.Handler {
 func (s *Server) requireAdmin(h http.HandlerFunc) http.Handler {
 	return s.requireLogin(func(w http.ResponseWriter, r *http.Request) {
 		if !sessionFrom(r).IsAdmin {
-			s.fail(w, r, http.StatusForbidden, "Only admins can open this page. Admins are members of the Cloudron group '"+s.cfg.AdminGroup+"' or listed in PG_ADMINS in /app/data/env.sh.")
+			s.fail(w, r, http.StatusForbidden, "Only admins can open this page. Admins are listed in PG_ADMINS or members of a group in PG_ADMIN_GROUP, both in /app/data/env.sh.")
 			return
 		}
 		h(w, r)
@@ -313,6 +325,31 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write([]byte("ok\n"))
+}
+
+// resolveMember looks the session user up in the directory. Group membership
+// and admin rights follow Cloudron within the directory cache time. When the
+// directory is down, the groups seen at login are kept; a user the directory
+// no longer knows has lost access to the app.
+func (s *Server) resolveMember(ctx context.Context, sess *store.Session) (access.Member, bool) {
+	m := access.Member{Username: sess.Username}
+	user, err := s.cfg.Directory.Lookup(ctx, sess.Username)
+	switch {
+	case errors.Is(err, directory.ErrNotConfigured):
+		sess.IsAdmin = sess.IsAdmin || s.cfg.Admins.IsAdmin(m)
+	case err != nil:
+		s.log.Warn("directory lookup failed, using the groups from login", "user", sess.Username, "err", err)
+		if user != nil {
+			m = user.Member()
+		}
+		sess.IsAdmin = sess.IsAdmin || s.cfg.Admins.IsAdmin(m)
+	case user == nil:
+		return m, false
+	default:
+		m = user.Member()
+		sess.IsAdmin = s.cfg.Admins.IsAdmin(m)
+	}
+	return m, true
 }
 
 // PurgeLoop removes expired sessions, abandoned logins and expired uploads.

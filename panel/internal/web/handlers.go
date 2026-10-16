@@ -2,76 +2,15 @@ package web
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/netip"
 	"os"
-	"regexp"
 	"strings"
 
 	"pgpanel/internal/hba"
-	"pgpanel/internal/scram"
 	"pgpanel/internal/store"
 	"pgpanel/internal/worker"
 )
-
-var ownerPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-
-type homeData struct {
-	Roles []store.Role
-}
-
-func (s *Server) home(w http.ResponseWriter, r *http.Request) {
-	roles, err := s.store.RolesOwnedBy(r.Context(), sessionFrom(r).Username)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "home", homeData{Roles: roles})
-}
-
-type secretData struct {
-	Role     string
-	Database string
-	Password string
-}
-
-// canManage: admins manage every tenant role, users only the roles assigned to them.
-func canManage(sess *store.Session, role *store.Role) bool {
-	return sess.IsAdmin || (role.Owner != "" && role.Owner == sess.Username)
-}
-
-func (s *Server) rotatePassword(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	role, err := s.store.GetRole(r.Context(), name)
-	if err == nil && !canManage(sessionFrom(r), role) {
-		err = store.ErrNotFound
-	}
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	password, err := s.setNewPassword(r.Context(), name)
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	s.audit(r, "role.password", name, "")
-	s.render(w, r, http.StatusOK, "secret", secretData{Role: name, Database: firstOr(role.Databases, name), Password: password})
-}
-
-func (s *Server) setNewPassword(ctx context.Context, role string) (string, error) {
-	password, err := scram.Password()
-	if err != nil {
-		return "", err
-	}
-	verifier, err := scram.Verifier(password)
-	if err != nil {
-		return "", err
-	}
-	return password, s.store.SetPassword(ctx, role, verifier)
-}
 
 func (s *Server) deleteDatabase(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
@@ -101,7 +40,7 @@ func (s *Server) deleteDatabase(w http.ResponseWriter, r *http.Request) {
 	if dir, err := worker.Resolve(s.cfg.SnapshotDir, name); err == nil {
 		os.Remove(dir)
 	}
-	http.Redirect(w, r, afterDelete(r, db), http.StatusSeeOther)
+	http.Redirect(w, r, s.afterDelete(r, db), http.StatusSeeOther)
 }
 
 type adminData struct {
@@ -142,99 +81,6 @@ func (s *Server) auditLog(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, http.StatusOK, "audit", entries)
 }
 
-func (s *Server) createRole(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	name := strings.TrimSpace(r.PostForm.Get("name"))
-	owner := strings.TrimSpace(r.PostForm.Get("owner"))
-	if owner != "" && !ownerPattern.MatchString(owner) {
-		s.userError(w, r, badInput("Owner must be a Cloudron username."))
-		return
-	}
-	limit, err := formInt(r, "conn_limit", 20, 1, 1000)
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	maxDBs, err := formMaxDatabases(r, owner)
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	password, err := scram.Password()
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	verifier, err := scram.Verifier(password)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if err := s.store.CreateRole(ctx, name, verifier, limit, owner, maxDBs); err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	s.audit(r, "role.create", name, fmt.Sprintf("owner=%s conn_limit=%d max_databases=%d", owner, limit, maxDBs))
-	data := secretData{Role: name, Password: password}
-	if r.PostForm.Get("with_database") == "on" {
-		if err := s.store.CreateDatabase(ctx, name, name, 0); err != nil {
-			s.userError(w, r, fmt.Errorf("role created, database failed: %w", err))
-			return
-		}
-		s.audit(r, "database.create", name, "owner="+name)
-		data.Database = name
-	}
-	s.render(w, r, http.StatusOK, "secret", data)
-}
-
-func (s *Server) updateRole(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	owner := strings.TrimSpace(r.PostForm.Get("owner"))
-	if owner != "" && !ownerPattern.MatchString(owner) {
-		s.userError(w, r, badInput("Owner must be a Cloudron username."))
-		return
-	}
-	limit, err := formInt(r, "conn_limit", 20, 1, 1000)
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	maxDBs, err := formMaxDatabases(r, owner)
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	if err := s.store.UpdateRole(r.Context(), name, owner, limit, maxDBs); err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	s.audit(r, "role.update", name, fmt.Sprintf("owner=%s conn_limit=%d max_databases=%d", owner, limit, maxDBs))
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func (s *Server) deleteRole(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if r.PostForm.Get("confirm") != name {
-		s.userError(w, r, badInput("Type the role name to confirm the deletion."))
-		return
-	}
-	if err := s.store.DropRole(r.Context(), name); err != nil {
-		if errors.Is(err, store.ErrHasDatabases) {
-			err = badInput(err.Error() + ". Delete them first.")
-		}
-		s.userError(w, r, err)
-		return
-	}
-	s.audit(r, "role.drop", name, "")
-	if err := s.store.DeleteUploadsOf(r.Context(), name); err != nil {
-		s.log.Error("deleting upload records of dropped role", "role", name, "err", err)
-	}
-	if err := os.RemoveAll(s.uploadDir(name)); err != nil {
-		s.log.Error("deleting uploads of dropped role", "role", name, "err", err)
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
 func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PostForm.Get("name"))
 	owner := r.PostForm.Get("owner")
@@ -244,41 +90,6 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r, "database.create", name, "owner="+owner)
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-// createOwnDatabase is the self-service path, limited by the role's max_databases.
-func (s *Server) createOwnDatabase(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	role, err := s.store.GetRole(ctx, r.PathValue("name"))
-	if err == nil && (role.Owner == "" || role.Owner != sessionFrom(r).Username) {
-		err = store.ErrNotFound
-	}
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	if role.MaxDatabases < 1 {
-		s.fail(w, r, http.StatusForbidden, "This role is not allowed to create databases. Ask an administrator.")
-		return
-	}
-	name := strings.TrimSpace(r.PostForm.Get("name"))
-	if err := s.store.CreateDatabase(ctx, name, role.Name, role.MaxDatabases); err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	s.audit(r, "database.create", name, fmt.Sprintf("owner=%s self-service", role.Name))
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-// formMaxDatabases returns 0 unless self-service database creation is enabled.
-func formMaxDatabases(r *http.Request, owner string) (int, error) {
-	if r.PostForm.Get("allow_create_db") != "on" {
-		return 0, nil
-	}
-	if owner == "" {
-		return 0, badInput("Creating databases needs an owner, set a Cloudron username.")
-	}
-	return formInt(r, "max_databases", 3, 1, 100)
 }
 
 // saveAllowlist validates every entry, writes the allowlist and pg_hba.conf, and
@@ -358,21 +169,4 @@ func (s *Server) applyAllowlist(ctx context.Context, list []netip.Prefix) error 
 		return err
 	}
 	return nil
-}
-
-func firstOr(list []string, def string) string {
-	if len(list) > 0 {
-		return list[0]
-	}
-	return def
-}
-
-// afterDelete returns to "My databases" for the role's owner, admins deleting
-// someone else's database return to the admin page.
-func afterDelete(r *http.Request, db *store.Database) string {
-	sess := sessionFrom(r)
-	if sess.IsAdmin && db.OwnerUser != sess.Username {
-		return "/admin"
-	}
-	return "/"
 }

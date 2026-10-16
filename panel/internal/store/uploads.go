@@ -27,6 +27,7 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS strict boolean NOT NULL DEFAULT true;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS progress smallint;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS progress_step text NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS started_at timestamptz;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS safety_snapshot boolean NOT NULL DEFAULT true;
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
 ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check CHECK (kind IN ('snapshot', 'restore', 'import'));`
 
@@ -165,7 +166,8 @@ func (s *Store) UploadInUse(ctx context.Context, id int64) (bool, error) {
 
 // EnqueueImport queues an import. strict imports run in one transaction and stop
 // at the first error, otherwise pg_restore skips failing statements.
-func (s *Store) EnqueueImport(ctx context.Context, database string, uploadID int64, strict bool, by string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO jobs (kind, database, upload_id, strict, requested_by) VALUES ('import', $1, $2, $3, $4)`, database, uploadID, strict, by)
+func (s *Store) EnqueueImport(ctx context.Context, database string, uploadID int64, strict, safetySnapshot bool, by string) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO jobs (kind, database, upload_id, strict, safety_snapshot, requested_by) VALUES ('import', $1, $2, $3, $4, $5)`,
+		database, uploadID, strict, safetySnapshot, by)
 	return asJobActive(err)
 }

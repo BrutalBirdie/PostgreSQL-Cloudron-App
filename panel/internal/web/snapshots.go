@@ -27,10 +27,9 @@ func (s *Server) authorizeDatabase(r *http.Request, name string) (*store.Databas
 	if err != nil {
 		return nil, err
 	}
-	if !canManage(sessionFrom(r), role) {
+	if !canManage(r, role) {
 		return nil, store.ErrNotFound
 	}
-	db.OwnerUser = role.Owner
 	return db, nil
 }
 
@@ -133,7 +132,7 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) {
 		s.userError(w, r, err)
 		return
 	}
-	if err := s.store.EnqueueJob(r.Context(), "snapshot", db.Name, nil, sessionFrom(r).Username); err != nil {
+	if err := s.store.EnqueueSnapshot(r.Context(), db.Name, sessionFrom(r).Username); err != nil {
 		s.userError(w, r, err)
 		return
 	}
@@ -165,11 +164,12 @@ func (s *Server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		s.userError(w, r, badInput("Type the database name to confirm the restore."))
 		return
 	}
-	if err := s.store.EnqueueJob(r.Context(), "restore", db.Name, &snap.ID, sessionFrom(r).Username); err != nil {
+	safety := r.PostForm.Get("safety_snapshot") == "on"
+	if err := s.store.EnqueueRestore(r.Context(), db.Name, snap.ID, safety, sessionFrom(r).Username); err != nil {
 		s.userError(w, r, err)
 		return
 	}
-	s.audit(r, "snapshot.restore", db.Name, fmt.Sprintf("snapshot=%d", snap.ID))
+	s.audit(r, "snapshot.restore", db.Name, fmt.Sprintf("snapshot=%d safety_snapshot=%t", snap.ID, safety))
 	http.Redirect(w, r, "/databases/"+db.Name, http.StatusSeeOther)
 }
 

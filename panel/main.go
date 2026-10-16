@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"pgpanel/internal/access"
+	"pgpanel/internal/directory"
 	"pgpanel/internal/hba"
 	"pgpanel/internal/store"
 	"pgpanel/internal/web"
@@ -21,7 +23,7 @@ import (
 )
 
 var (
-	snapshotDir = env("SNAPSHOT_DIR", "/app/data/snapshots")
+	snapshotDir = env("SNAPSHOT_DIR", "/var/lib/postgresql/snapshots")
 	uploadDir   = env("UPLOAD_DIR", "/app/data/uploads")
 	pgBinDir    = env("PG_BIN_DIR", "/usr/lib/postgresql/18/bin")
 	socketDir   = env("PG_SOCKET_DIR", "/var/lib/postgresql/run")
@@ -33,6 +35,30 @@ func uploadRetention() time.Duration {
 		n = 8
 	}
 	return time.Duration(n) * 24 * time.Hour
+}
+
+func scimClient() *directory.Client {
+	ttl, err := time.ParseDuration(os.Getenv("PANEL_SCIM_CACHE"))
+	if err != nil || ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+	return directory.New(os.Getenv("CLOUDRON_SCIM_ORIGIN"), os.Getenv("CLOUDRON_SCIM_TOKEN"), ttl)
+}
+
+func accessSyncInterval() time.Duration {
+	d, err := time.ParseDuration(os.Getenv("PANEL_ACCESS_SYNC"))
+	if err != nil || d <= 0 {
+		return time.Minute
+	}
+	return d
+}
+
+func splitList(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' })
+}
+
+func admins() access.Admins {
+	return access.Admins{Users: splitList(os.Getenv("PG_ADMINS")), Groups: splitList(env("PG_ADMIN_GROUP", "postgres-admins"))}
 }
 
 func maxSnapshots() int {
@@ -65,7 +91,9 @@ func runWorker(log *slog.Logger) error {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return worker.New(worker.Config{SnapshotDir: snapshotDir, UploadDir: uploadDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots()}, st, log).Run(ctx)
+	w := worker.New(worker.Config{Directory: scimClient(), Admins: admins(), SnapshotDir: snapshotDir, UploadDir: uploadDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots()}, st, log)
+	go w.AccessSync(ctx, accessSyncInterval())
+	return w.Run(ctx)
 }
 
 func env(key, def string) string {
@@ -155,8 +183,8 @@ func serve(log *slog.Logger) error {
 		Issuer:        os.Getenv("CLOUDRON_OIDC_ISSUER"),
 		ClientID:      os.Getenv("CLOUDRON_OIDC_CLIENT_ID"),
 		ClientSecret:  os.Getenv("CLOUDRON_OIDC_CLIENT_SECRET"),
-		AdminGroup:    env("PG_ADMIN_GROUP", "postgres-admins"),
-		Admins:        strings.FieldsFunc(os.Getenv("PG_ADMINS"), func(r rune) bool { return r == ',' || r == ' ' }),
+		Directory:     scimClient(),
+		Admins:        admins(),
 		AllowlistFile: env("ALLOWLIST_FILE", "/app/data/allowed_networks.txt"),
 		HBAFile:       env("HBA_FILE", "/run/pg/hba/pg_hba.conf"),
 		PGAdminPath:   os.Getenv("PGADMIN_PATH"),

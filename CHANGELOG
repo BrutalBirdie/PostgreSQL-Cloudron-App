@@ -43,3 +43,12 @@
 * Snapshots, restores and imports show their progress: current step and, while loading, how much of the dump has been read
 * Snapshots show an estimated percentage and the table being copied, from the table sizes and pg_stat_progress_copy
 * Restores and imports load into a new database and switch over at the end. The current database stays online and unchanged until then, a failed all-or-nothing import changes nothing
+
+[0.7.0]
+* Roles can have several owners: Cloudron users and groups, chosen with a search in the admin panel (needs the SCIM addon)
+* Every owner has an own login (role.username) and password. A user who is no longer an owner, directly or through a group, loses the login within a minute; the other logins keep working
+* Breaking: the shared password of existing roles is disabled on update. Owners create their own login on My databases and clients must switch to it
+* PG_ADMIN_GROUP accepts several groups, group membership is checked live
+* The safety snapshot before a restore or import is optional (checked by default)
+* Snapshots use zstd compression and are stored outside of Cloudron backups, the backup already contains a full dump
+* Snapshots and backups quote all identifiers

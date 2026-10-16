@@ -9,9 +9,10 @@
     <dt>Snapshot</dt><dd>#{{$snap.ID}}, {{$snap.CreatedAt.UTC.Format "2006-01-02 15:04:05"}} UTC, {{bytes $snap.SizeBytes}}, by {{$snap.CreatedBy}}{{with $snap.Note}} ({{.}}){{end}}</dd>
   </dl>
   <p class="warning">All current data in <code>{{$db.Name}}</code> is replaced and its clients are disconnected.
-  A snapshot of the current state is taken first, so you can go back.</p>
+  With the option below, a snapshot of the current state is taken first, so you can go back.</p>
   <form method="post" action="/snapshots/{{$snap.ID}}/restore" class="inline">
     <input type="hidden" name="csrf" value="{{.Session.CSRFToken}}">
+    <label class="check"><input type="checkbox" name="safety_snapshot" checked> Take a snapshot of the current data first</label>
     <input type="text" name="confirm" placeholder="type {{$db.Name}} to confirm" required autocomplete="off" aria-label="Type {{$db.Name}} to confirm the restore">
     <button type="submit" class="danger">Restore snapshot</button>
     <a href="/databases/{{$db.Name}}">Cancel</a>

@@ -10,11 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"pgpanel/internal/access"
 	"pgpanel/internal/store"
 )
 
 func testServer(t *testing.T) *Server {
-	s, err := New(Config{Origin: "https://pg.example", PublicHost: "pg.example", PublicPort: "5432", AdminGroup: "postgres-admins", Admins: []string{"root_user"}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s, err := New(Config{Origin: "https://pg.example", PublicHost: "pg.example", PublicPort: "5432", Admins: access.Admins{Users: []string{"root_user"}, Groups: []string{"postgres-admins"}}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,12 +26,14 @@ func TestPagesRender(t *testing.T) {
 	s := testServer(t)
 	now, pct := time.Now(), 42
 	admin := &store.Session{Username: "ann", DisplayName: "Ann", IsAdmin: true, CSRFToken: "tok"}
-	roles := []store.Role{{Name: "app_one", ConnLimit: 20, Owner: "ann", MaxDatabases: 3, Databases: []string{"app_one"}}}
+	roles := []store.Role{{Name: "app_one", ConnLimit: 20, Owners: []access.Principal{{Kind: "user", ID: "ann", Display: "ann"}, {Kind: "group", ID: "g1", Display: "dbteam"}}, MaxDatabases: 3, Databases: []string{"app_one"}}}
+	login := &store.Login{LoginRole: "app_one.ann", RoleName: "app_one", Username: "ann", RotatedAt: time.Now()}
 	pages := map[string]any{
 		"login":  nil,
-		"home":   homeData{Roles: roles},
+		"home":   homeData{Roles: []roleView{{Role: roles[0], Login: login}, {Role: roles[0]}}},
+		"role":   rolePageData{Role: roles[0], OwnersText: "user:ann, group:dbteam", Logins: []store.Login{*login}},
 		"admin":  adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n"},
-		"secret": secretData{Role: "app_one", Database: "app_one", Password: "pw"},
+		"secret": secretData{Login: "app_one.ann", Role: "app_one", Database: "app_one", Password: "pw"},
 		"audit":  []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}},
 		"error":  nil,
 		"uploads": uploadsData{Role: roles[0], KeepDays: 8, Uploads: []uploadView{
@@ -109,41 +112,6 @@ func TestValidPost(t *testing.T) {
 	}
 }
 
-func TestCanManage(t *testing.T) {
-	role := &store.Role{Name: "r", Owner: "bob"}
-	if !canManage(&store.Session{Username: "bob"}, role) {
-		t.Error("owner must manage own role")
-	}
-	if canManage(&store.Session{Username: "eve"}, role) {
-		t.Error("other user must not manage the role")
-	}
-	if canManage(&store.Session{Username: ""}, &store.Role{Name: "r"}) {
-		t.Error("unassigned role must not match an empty username")
-	}
-	if !canManage(&store.Session{Username: "ann", IsAdmin: true}, role) {
-		t.Error("admin must manage every role")
-	}
-}
-
-func TestIsAdmin(t *testing.T) {
-	s := testServer(t)
-	cases := []struct {
-		user    string
-		inGroup bool
-		want    bool
-	}{
-		{"root_user", false, true},
-		{"ann", true, true},
-		{"bob", false, false},
-		{"", false, false},
-	}
-	for _, c := range cases {
-		if got := s.isAdmin(c.user, c.inGroup); got != c.want {
-			t.Errorf("%s %v: got %v want %v", c.user, c.inGroup, got, c.want)
-		}
-	}
-}
-
 func TestHumanBytes(t *testing.T) {
 	for n, want := range map[int64]string{0: "0 B", 1023: "1023 B", 1024: "1.0 KiB", 1536: "1.5 KiB", 5 << 30: "5.0 GiB"} {
 		if got := humanBytes(n); got != want {
@@ -152,22 +120,45 @@ func TestHumanBytes(t *testing.T) {
 	}
 }
 
-func TestAfterDelete(t *testing.T) {
+func TestCanManage(t *testing.T) {
+	role := &store.Role{Name: "r", Owners: []access.Principal{{Kind: "user", ID: "bob"}, {Kind: "group", ID: "g1"}}}
+	req := func(sess *store.Session, m access.Member) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		ctx := context.WithValue(r.Context(), ctxKey{}, sess)
+		return r.WithContext(context.WithValue(ctx, memberKey{}, m))
+	}
 	cases := []struct {
-		sess *store.Session
-		db   *store.Database
-		want string
+		name string
+		r    *http.Request
+		want bool
 	}{
-		{&store.Session{Username: "bob"}, &store.Database{OwnerUser: "bob"}, "/"},
-		{&store.Session{Username: "ann", IsAdmin: true}, &store.Database{OwnerUser: "ann"}, "/"},
-		{&store.Session{Username: "ann", IsAdmin: true}, &store.Database{OwnerUser: "bob"}, "/admin"},
-		{&store.Session{Username: "ann", IsAdmin: true}, &store.Database{OwnerUser: ""}, "/admin"},
+		{"named owner", req(&store.Session{Username: "bob"}, access.Member{Username: "bob"}), true},
+		{"group member", req(&store.Session{Username: "carol"}, access.Member{Username: "carol", GroupIDs: []string{"g1"}}), true},
+		{"stranger", req(&store.Session{Username: "eve"}, access.Member{Username: "eve", GroupIDs: []string{"g2"}}), false},
+		{"admin", req(&store.Session{Username: "ann", IsAdmin: true}, access.Member{Username: "ann"}), true},
 	}
 	for _, c := range cases {
-		req := httptest.NewRequest("POST", "/", nil)
-		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c.sess))
-		if got := afterDelete(req, c.db); got != c.want {
-			t.Errorf("%s deleting db of %q: got %s want %s", c.sess.Username, c.db.OwnerUser, got, c.want)
+		if got := canManage(c.r, role); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
 		}
+	}
+	if owns(req(&store.Session{Username: "ann", IsAdmin: true}, access.Member{Username: "ann"}), role) {
+		t.Error("admin must not count as owner")
+	}
+}
+
+func TestParseOwnersWithoutDirectory(t *testing.T) {
+	s := testServer(t)
+	owners, err := s.parseOwners(context.Background(), "user:bob, carol\nuser:bob")
+	if err != nil || len(owners) != 2 || owners[1].ID != "carol" {
+		t.Fatalf("owners %v err %v", owners, err)
+	}
+	for _, bad := range []string{"group:dbteam", "user:Bad Name", "robot:x"} {
+		if _, err := s.parseOwners(context.Background(), bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if got := ownersText([]access.Principal{{Kind: "user", ID: "bob"}, {Kind: "group", ID: "g1", Display: "dbteam"}}); got != "user:bob, group:dbteam" {
+		t.Errorf("ownersText = %q", got)
 	}
 }

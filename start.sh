@@ -18,7 +18,7 @@ fi
 if [[ ! -f /app/data/env.sh ]]; then
     cat > /app/data/env.sh <<'EOF'
 # Restart the app after changing these.
-# Members of this Cloudron group are admins in the panel.
+# Members of these Cloudron groups are admins in the panel, separated by commas.
 export PG_ADMIN_GROUP=postgres-admins
 # Cloudron usernames that are always admins, separated by commas.
 export PG_ADMINS=""
@@ -34,12 +34,18 @@ if [[ ! -f "${ALLOWLIST_FILE}" ]]; then
     printf '# Networks allowed to connect to PostgreSQL from outside, one per line.\n# Managed by the admin panel. Manual edits need an app restart.\n' > "${ALLOWLIST_FILE}"
 fi
 
-mkdir -p /app/data/snapshots
 chown -R cloudron:cloudron /app/data
+readonly SNAPSHOT_DIR="${PG_ROOT}/snapshots"
+mkdir -p "${SNAPSHOT_DIR}"
+if [[ -d /app/data/snapshots ]]; then
+    echo "==> Moving snapshots to ${SNAPSHOT_DIR}, they are no longer part of Cloudron backups"
+    cp -a /app/data/snapshots/. "${SNAPSHOT_DIR}/"
+    rm -rf /app/data/snapshots
+fi
 # written by the worker (postgres), read and deleted by the panel (cloudron)
-chown -R postgres:cloudron /app/data/snapshots
-find /app/data/snapshots -type d -exec chmod 2770 {} +
-find /app/data/snapshots -type f -exec chmod 0640 {} +
+chown -R postgres:cloudron "${SNAPSHOT_DIR}"
+find "${SNAPSHOT_DIR}" -type d -exec chmod 2770 {} +
+find "${SNAPSHOT_DIR}" -type f -exec chmod 0640 {} +
 mkdir -p /app/data/uploads
 # written and deleted by the panel (cloudron), read by the worker (postgres)
 chown -R cloudron:postgres /app/data/uploads

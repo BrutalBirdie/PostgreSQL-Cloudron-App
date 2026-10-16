@@ -6,11 +6,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"slices"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
+	"pgpanel/internal/access"
 	"pgpanel/internal/store"
 )
 
@@ -125,7 +125,7 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 	sess := store.Session{
 		Username:    username,
 		DisplayName: display,
-		IsAdmin:     s.cfg.AdminGroup != "" && slices.Contains(cl.Groups, s.cfg.AdminGroup),
+		IsAdmin:     s.cfg.Admins.IsAdmin(access.Member{Username: username, GroupNames: cl.Groups}),
 		CSRFToken:   randomToken(),
 	}
 	sessionToken := randomToken()
@@ -133,15 +133,9 @@ func (s *Server) callback(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	s.log.Info("login", "user", username, "admin", s.isAdmin(username, sess.IsAdmin))
+	s.log.Info("login", "user", username, "admin", sess.IsAdmin)
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: sessionToken, Path: "/", MaxAge: int(maxSession.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, "/", http.StatusFound)
-}
-
-// isAdmin combines the group membership seen at login with PG_ADMINS, which is
-// checked on every request so env.sh changes apply to existing sessions.
-func (s *Server) isAdmin(username string, inAdminGroup bool) bool {
-	return inAdminGroup || (username != "" && slices.Contains(s.cfg.Admins, username))
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
