@@ -21,8 +21,7 @@ if [[ ! -f /app/data/env.sh ]]; then
 # Members of this Cloudron group are admins in the panel.
 export PG_ADMIN_GROUP=postgres-admins
 # Cloudron usernames that are always admins, separated by commas.
-# TODO: Remove default user james when app goes live
-export PG_ADMINS="james"
+export PG_ADMINS=""
 # Snapshots kept per database and type (manual, scheduled, before restore), oldest are deleted first.
 export PG_MAX_SNAPSHOTS=7
 # Uploaded dump files are deleted after this many days unless marked to keep.
