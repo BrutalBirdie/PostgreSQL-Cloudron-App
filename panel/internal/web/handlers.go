@@ -13,6 +13,7 @@ import (
 	"pgpanel/internal/hba"
 	"pgpanel/internal/scram"
 	"pgpanel/internal/store"
+	"pgpanel/internal/worker"
 )
 
 var ownerPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -75,14 +76,7 @@ func (s *Server) setNewPassword(ctx context.Context, role string) (string, error
 func (s *Server) deleteDatabase(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	ctx := r.Context()
-	db, err := s.store.GetDatabase(ctx, name)
-	if err == nil {
-		var role *store.Role
-		role, err = s.store.GetRole(ctx, db.Owner)
-		if err == nil && !canManage(sessionFrom(r), role) {
-			err = store.ErrNotFound
-		}
-	}
+	db, err := s.authorizeDatabase(r, name)
 	if err != nil {
 		s.userError(w, r, err)
 		return
@@ -96,7 +90,18 @@ func (s *Server) deleteDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "database.drop", name, "owner="+db.Owner)
-	http.Redirect(w, r, backTo(r), http.StatusSeeOther)
+	if err := s.store.DeleteSchedule(ctx, name); err != nil {
+		s.log.Error("deleting schedule of dropped database", "database", name, "err", err)
+	}
+	files, err := s.store.DeleteSnapshotsOf(ctx, name)
+	if err != nil {
+		s.log.Error("deleting snapshots of dropped database", "database", name, "err", err)
+	}
+	worker.RemoveFiles(s.cfg.SnapshotDir, files, s.log)
+	if dir, err := worker.Resolve(s.cfg.SnapshotDir, name); err == nil {
+		os.Remove(dir)
+	}
+	http.Redirect(w, r, afterDelete(r, db), http.StatusSeeOther)
 }
 
 type adminData struct {
@@ -356,9 +361,11 @@ func firstOr(list []string, def string) string {
 	return def
 }
 
-// backTo only allows the two known pages, never a user supplied URL.
-func backTo(r *http.Request) string {
-	if r.PostForm.Get("back") == "admin" && sessionFrom(r).IsAdmin {
+// afterDelete returns to "My databases" for the role's owner, admins deleting
+// someone else's database return to the admin page.
+func afterDelete(r *http.Request, db *store.Database) string {
+	sess := sessionFrom(r)
+	if sess.IsAdmin && db.OwnerUser != sess.Username {
 		return "/admin"
 	}
 	return "/"

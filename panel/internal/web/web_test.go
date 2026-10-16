@@ -26,12 +26,21 @@ func TestPagesRender(t *testing.T) {
 	admin := &store.Session{Username: "ann", DisplayName: "Ann", IsAdmin: true, CSRFToken: "tok"}
 	roles := []store.Role{{Name: "app_one", ConnLimit: 20, Owner: "ann", MaxDatabases: 3, Databases: []string{"app_one"}}}
 	pages := map[string]any{
-		"login":  nil,
-		"home":   homeData{Roles: roles},
-		"admin":  adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n"},
-		"secret": secretData{Role: "app_one", Database: "app_one", Password: "pw"},
-		"audit":  []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}},
-		"error":  nil,
+		"login":   nil,
+		"home":    homeData{Roles: roles},
+		"admin":   adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n"},
+		"secret":  secretData{Role: "app_one", Database: "app_one", Password: "pw"},
+		"audit":   []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}},
+		"error":   nil,
+		"restore": restoreData{Snapshot: store.Snapshot{ID: 7, CreatedAt: time.Now(), SizeBytes: 10}, Database: store.Database{Name: "app_one", Owner: "app_one"}},
+		"database": databaseData{
+			Database:     store.Database{Name: "app_one", Owner: "app_one"},
+			Snapshots:    []store.Snapshot{{ID: 7, Database: "app_one", OwnerRole: "app_one", SizeBytes: 123456, CreatedBy: "ann", CreatedAt: time.Now(), Note: "automatic"}},
+			Jobs:         []store.Job{{ID: 1, Kind: "snapshot", Status: "running", CreatedAt: time.Now()}},
+			Busy:         true,
+			MaxSnapshots: 7,
+			Schedule:     &store.Schedule{Database: "app_one", OwnerRole: "app_one", Cron: "0 3 * * *", NextRun: time.Now()},
+		},
 	}
 	for page, data := range pages {
 		req := httptest.NewRequest("GET", "/", nil)
@@ -121,6 +130,34 @@ func TestIsAdmin(t *testing.T) {
 	for _, c := range cases {
 		if got := s.isAdmin(c.user, c.inGroup); got != c.want {
 			t.Errorf("%s %v: got %v want %v", c.user, c.inGroup, got, c.want)
+		}
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	for n, want := range map[int64]string{0: "0 B", 1023: "1023 B", 1024: "1.0 KiB", 1536: "1.5 KiB", 5 << 30: "5.0 GiB"} {
+		if got := humanBytes(n); got != want {
+			t.Errorf("%d: got %s want %s", n, got, want)
+		}
+	}
+}
+
+func TestAfterDelete(t *testing.T) {
+	cases := []struct {
+		sess *store.Session
+		db   *store.Database
+		want string
+	}{
+		{&store.Session{Username: "bob"}, &store.Database{OwnerUser: "bob"}, "/"},
+		{&store.Session{Username: "ann", IsAdmin: true}, &store.Database{OwnerUser: "ann"}, "/"},
+		{&store.Session{Username: "ann", IsAdmin: true}, &store.Database{OwnerUser: "bob"}, "/admin"},
+		{&store.Session{Username: "ann", IsAdmin: true}, &store.Database{OwnerUser: ""}, "/admin"},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest("POST", "/", nil)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, c.sess))
+		if got := afterDelete(req, c.db); got != c.want {
+			t.Errorf("%s deleting db of %q: got %s want %s", c.sess.Username, c.db.OwnerUser, got, c.want)
 		}
 	}
 }

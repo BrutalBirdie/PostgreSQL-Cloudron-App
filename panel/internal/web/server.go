@@ -46,6 +46,9 @@ type Config struct {
 	AllowlistFile string
 	HBAFile       string
 	PGAdminPath   string // empty when pgAdmin is not bundled
+	SnapshotDir   string
+	PGBinDir      string
+	MaxSnapshots  int
 }
 
 type Server struct {
@@ -62,8 +65,8 @@ type Server struct {
 
 func New(cfg Config, st *store.Store, log *slog.Logger) (*Server, error) {
 	s := &Server{cfg: cfg, store: st, log: log, pages: map[string]*template.Template{}}
-	funcs := template.FuncMap{"connURL": s.connURL}
-	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error"} {
+	funcs := template.FuncMap{"connURL": s.connURL, "bytes": humanBytes}
+	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error", "database", "restore"} {
 		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
 		if err != nil {
 			return nil, err
@@ -86,6 +89,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /roles/{name}/password", s.requireLogin(s.rotatePassword))
 	mux.Handle("POST /roles/{name}/databases", s.requireLogin(s.createOwnDatabase))
 	mux.Handle("POST /databases/{name}/delete", s.requireLogin(s.deleteDatabase))
+	mux.Handle("GET /databases/{name}", s.requireLogin(s.databasePage))
+	mux.Handle("POST /databases/{name}/snapshots", s.requireLogin(s.createSnapshot))
+	mux.Handle("POST /databases/{name}/schedule", s.requireLogin(s.saveSchedule))
+	mux.Handle("GET /snapshots/{id}/download", s.requireLogin(s.downloadSnapshot))
+	mux.Handle("GET /snapshots/{id}/restore", s.requireLogin(s.restorePage))
+	mux.Handle("POST /snapshots/{id}/restore", s.requireLogin(s.restoreSnapshot))
+	mux.Handle("POST /snapshots/{id}/delete", s.requireLogin(s.deleteSnapshot))
 
 	mux.Handle("GET /admin", s.requireAdmin(s.admin))
 	mux.Handle("GET /admin/audit", s.requireAdmin(s.auditLog))
@@ -225,6 +235,8 @@ func (s *Server) userError(w http.ResponseWriter, r *http.Request, err error) {
 		s.fail(w, r, http.StatusBadRequest, "Invalid name: "+err.Error()+".")
 	case errors.As(err, &pgErr):
 		s.fail(w, r, http.StatusBadRequest, "PostgreSQL: "+pgErr.Message)
+	case errors.Is(err, store.ErrJobActive):
+		s.fail(w, r, http.StatusConflict, "Another snapshot or restore of this database is still running. Wait until it has finished.")
 	case errors.Is(err, store.ErrLimitReached):
 		s.fail(w, r, http.StatusBadRequest, "Limit reached: "+strings.TrimPrefix(err.Error(), store.ErrLimitReached.Error()+": ")+".")
 	case errors.As(err, new(inputError)):
@@ -317,4 +329,17 @@ func formInt(r *http.Request, key string, def, min, max int) (int, error) {
 		return 0, badInput(key + " must be a number between " + strconv.Itoa(min) + " and " + strconv.Itoa(max) + ".")
 	}
 	return n, nil
+}
+
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return strconv.FormatInt(n, 10) + " B"
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return strconv.FormatFloat(float64(n)/float64(div), 'f', 1, 64) + " " + string("KMGTPE"[exp]) + "iB"
 }

@@ -93,6 +93,7 @@ func Render(allow []netip.Prefix, allowLocalhost bool) string {
 	line("# generated, do not edit")
 	line("local    pgpanel  pgpanel           peer map=panel")
 	line("local    all      postgres          peer")
+	line("local    all      +tenants          peer map=worker")
 	line("local    all      all               reject")
 	line("host     all      postgres,pgpanel  0.0.0.0/0  reject")
 	line("host     all      postgres,pgpanel  ::/0       reject")

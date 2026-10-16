@@ -1,0 +1,20 @@
+{{define "content"}}
+{{$snap := .Data.Snapshot}}
+{{$db := .Data.Database}}
+<p><a href="/databases/{{$db.Name}}">&larr; {{$db.Name}}</a></p>
+<section class="card danger-zone">
+  <h1>Restore snapshot #{{$snap.ID}}</h1>
+  <dl>
+    <dt>Database</dt><dd><code>{{$db.Name}}</code></dd>
+    <dt>Snapshot</dt><dd>#{{$snap.ID}}, {{$snap.CreatedAt.UTC.Format "2006-01-02 15:04:05"}} UTC, {{bytes $snap.SizeBytes}}, by {{$snap.CreatedBy}}{{with $snap.Note}} ({{.}}){{end}}</dd>
+  </dl>
+  <p class="warning">All current data in <code>{{$db.Name}}</code> is replaced and its clients are disconnected.
+  A snapshot of the current state is taken first, so you can go back.</p>
+  <form method="post" action="/snapshots/{{$snap.ID}}/restore" class="inline">
+    <input type="hidden" name="csrf" value="{{.Session.CSRFToken}}">
+    <input type="text" name="confirm" placeholder="type {{$db.Name}} to confirm" required autocomplete="off" aria-label="Type {{$db.Name}} to confirm the restore">
+    <button type="submit" class="danger">Restore snapshot</button>
+    <a href="/databases/{{$db.Name}}">Cancel</a>
+  </form>
+</section>
+{{end}}

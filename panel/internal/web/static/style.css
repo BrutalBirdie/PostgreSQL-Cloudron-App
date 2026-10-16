@@ -41,3 +41,12 @@ dd { margin: 0; }
 .reveal { display: grid; gap: 10px; }
 .reveal.inline { display: inline-flex; gap: 6px; align-items: center; }
 .reveal:has(input[type=checkbox]:not(:checked)) .when-checked { display: none; }
+button.secondary, .button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+td.actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+td.actions .button, td.actions button { padding: 4px 10px; font-size: 0.9em; }
+.danger-zone { border-color: var(--danger); }
+.danger-zone h2, .danger-zone h1 { color: var(--danger); }
+.danger-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.danger-row p { margin: 4px 0 0; }
+section.card > form + table { margin-top: 12px; }
+.tag { display: inline-block; font-size: 0.8em; padding: 0 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }

@@ -89,20 +89,13 @@
 <section class="card">
   <h2>Databases</h2>
   <table>
-    <thead><tr><th>Database</th><th>Owner role</th><th>Delete</th></tr></thead>
+    <thead><tr><th>Database</th><th>Owner role</th><th></th></tr></thead>
     <tbody>
     {{range .Data.Databases}}
     <tr>
-      <td><code>{{.Name}}</code></td>
+      <td><a href="/databases/{{.Name}}"><code>{{.Name}}</code></a></td>
       <td><code>{{.Owner}}</code></td>
-      <td>
-        <form method="post" action="/databases/{{.Name}}/delete" class="inline">
-          <input type="hidden" name="csrf" value="{{$csrf}}">
-          <input type="hidden" name="back" value="admin">
-          <input type="text" name="confirm" placeholder="type {{.Name}}" required autocomplete="off" aria-label="Confirm deletion of {{.Name}}">
-          <button type="submit" class="danger">Delete</button>
-        </form>
-      </td>
+      <td><a class="button secondary" href="/databases/{{.Name}}">Manage</a></td>
     </tr>
     {{else}}
     <tr><td colspan="3">No databases yet.</td></tr>

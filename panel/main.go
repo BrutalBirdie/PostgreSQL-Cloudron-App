@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -16,7 +17,47 @@ import (
 	"pgpanel/internal/hba"
 	"pgpanel/internal/store"
 	"pgpanel/internal/web"
+	"pgpanel/internal/worker"
 )
+
+var (
+	snapshotDir = env("SNAPSHOT_DIR", "/app/data/snapshots")
+	pgBinDir    = env("PG_BIN_DIR", "/usr/lib/postgresql/18/bin")
+	socketDir   = env("PG_SOCKET_DIR", "/var/lib/postgresql/run")
+)
+
+func maxSnapshots() int {
+	n, err := strconv.Atoi(os.Getenv("PG_MAX_SNAPSHOTS"))
+	if err != nil || n < 1 {
+		return 7
+	}
+	return n
+}
+
+// runWorker runs as the postgres OS user, see package worker.
+func runWorker(log *slog.Logger) error {
+	// snapshot files and directories must be usable by the panel's group
+	syscall.Umask(0o007)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	st, err := store.Open(ctx, env("WORKER_DATABASE_URL", "host="+socketDir+" user=postgres dbname=pgpanel"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	// the panel owns and creates the tables, a superuser-created table would lock it out
+	for deadline := time.Now().Add(120 * time.Second); ; {
+		err = st.CheckSnapshotTables(ctx)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return err
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return worker.New(worker.Config{SnapshotDir: snapshotDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots()}, st, log).Run(ctx)
+}
 
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -27,6 +68,13 @@ func env(key, def string) string {
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if len(os.Args) > 1 && os.Args[1] == "worker" {
+		if err := runWorker(log); err != nil {
+			log.Error("worker stopped", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "render-hba" {
 		if err := renderHBA(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "render-hba:", err)
@@ -103,6 +151,9 @@ func serve(log *slog.Logger) error {
 		AllowlistFile: env("ALLOWLIST_FILE", "/app/data/allowed_networks.txt"),
 		HBAFile:       env("HBA_FILE", "/run/pg/hba/pg_hba.conf"),
 		PGAdminPath:   os.Getenv("PGADMIN_PATH"),
+		SnapshotDir:   snapshotDir,
+		PGBinDir:      pgBinDir,
+		MaxSnapshots:  maxSnapshots(),
 	}, st, log)
 	if err != nil {
 		return err

@@ -52,6 +52,9 @@ func TestRender(t *testing.T) {
 	if !strings.Contains(out, "hostssl  all      +tenants          203.0.113.10/32  scram-sha-256") {
 		t.Fatal(out)
 	}
+	if !strings.Contains(out, "local    all      +tenants          peer map=worker") {
+		t.Fatal("worker rule missing")
+	}
 	if strings.Contains(out, "127.0.0.1") || strings.Contains(out, "trust") {
 		t.Fatal(out)
 	}

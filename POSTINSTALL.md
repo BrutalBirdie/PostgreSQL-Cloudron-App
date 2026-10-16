@@ -6,3 +6,4 @@ Remote connections are blocked until you allow a network.
 4. Create a role. Its password is shown once and not stored.
 5. Connect with TLS verification:
    `psql "postgresql://<role>:<password>@$CLOUDRON-APP-FQDN:<port>/<database>?sslmode=verify-full&sslrootcert=system"`
+   On Windows, `sslrootcert=system` does not find the Windows certificate store. Download [isrgrootx1.pem](https://letsencrypt.org/certs/isrgrootx1.pem) and pass its path instead.

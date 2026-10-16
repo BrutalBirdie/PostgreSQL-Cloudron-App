@@ -11,3 +11,22 @@
 * Admins can be set by username with PG_ADMINS in /app/data/env.sh
 * Roles can be allowed to create their own databases up to a set maximum
 * Fix form submissions being rejected by the browser origin check
+
+[0.4.0]
+* Database snapshots: create on demand, download as .dump or .sql, restore, delete
+* A snapshot of the current state is taken automatically before every restore
+* The number of snapshots kept per database is set with PG_MAX_SNAPSHOTS in /app/data/env.sh
+
+[0.5.0]
+* Automatic snapshots on a cron schedule (UTC, at most hourly) per database
+* Manual, scheduled and before-restore snapshots are rotated separately
+* Default number of kept snapshots raised to 7
+* Restore has its own confirmation page, database deletion moved to a danger zone on the database page
+
+[0.5.1]
+* Fix snapshot downloads failing with permission denied for databases whose first snapshot was made after 0.4.0
+* Database deletion returns to My databases unless an admin deletes another user's database
+* Stream snapshot downloads instead of buffering them in nginx
+* Remove partial snapshot files left by an interrupted worker
+* Delete finished snapshot jobs after 30 days
+* Stop the worker from logging errors while waiting for the panel's first migration

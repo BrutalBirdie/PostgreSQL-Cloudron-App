@@ -71,6 +71,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
     target text NOT NULL,
     detail text NOT NULL DEFAULT ''
 );`)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrateSnapshots)
 	return err
 }
 
@@ -121,7 +125,10 @@ func (s *Store) PurgeExpired(ctx context.Context, idle, absolute time.Duration) 
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `DELETE FROM oidc_logins WHERE created_at < now() - interval '10 minutes'`)
+	if _, err = s.pool.Exec(ctx, `DELETE FROM oidc_logins WHERE created_at < now() - interval '10 minutes'`); err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `DELETE FROM jobs WHERE status IN ('done', 'failed') AND finished_at < now() - interval '30 days'`)
 	return err
 }
 
@@ -174,8 +181,9 @@ type Role struct {
 }
 
 type Database struct {
-	Name  string
-	Owner string
+	Name      string
+	Owner     string // owner role
+	OwnerUser string // Cloudron user of the owner role, only set by the web layer
 }
 
 // tenantRoles is the only set of roles the panel ever touches. pgpanel is a

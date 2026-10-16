@@ -20,15 +20,9 @@
     <tbody>
     {{range .Databases}}
     <tr>
-      <td><code>{{.}}</code></td>
+      <td><a href="/databases/{{.}}"><code>{{.}}</code></a></td>
       <td><code class="wrap">{{connURL $role .}}</code></td>
-      <td>
-        <form method="post" action="/databases/{{.}}/delete" class="inline">
-          <input type="hidden" name="csrf" value="{{$csrf}}">
-          <input type="text" name="confirm" placeholder="type {{.}} to delete" required autocomplete="off" aria-label="Confirm deletion of {{.}}">
-          <button type="submit" class="danger">Delete</button>
-        </form>
-      </td>
+      <td><a class="button secondary" href="/databases/{{.}}">Manage</a></td>
     </tr>
     {{end}}
     </tbody>

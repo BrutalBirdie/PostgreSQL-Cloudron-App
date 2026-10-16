@@ -1,0 +1,101 @@
+{{define "content"}}
+{{$csrf := .Session.CSRFToken}}
+{{$db := .Data.Database}}
+{{if .Data.Busy}}<meta http-equiv="refresh" content="5">{{end}}
+<p><a href="/">&larr; My databases</a></p>
+<h1>Database <code>{{$db.Name}}</code></h1>
+<p class="muted">Owned by role <code>{{$db.Owner}}</code>. The newest {{.Data.MaxSnapshots}} manual, {{.Data.MaxSnapshots}} scheduled and {{.Data.MaxSnapshots}} before-restore snapshots are kept, the oldest of each type are deleted automatically.</p>
+
+<section class="card">
+  <h2>Automatic snapshots</h2>
+  {{with .Data.Schedule}}
+  <p>Schedule <code>{{.Cron}}</code> (UTC). Next run: {{.NextRun.UTC.Format "2006-01-02 15:04"}} UTC.</p>
+  {{else}}
+  <p class="muted">No automatic snapshots.</p>
+  {{end}}
+  <form method="post" action="/databases/{{$db.Name}}/schedule" class="inline">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="text" name="cron" value="{{with .Data.Schedule}}{{.Cron}}{{end}}" placeholder="0 3 * * *" list="cron-presets" spellcheck="false" autocomplete="off" aria-label="Cron schedule in UTC">
+    <datalist id="cron-presets">
+      <option value="0 * * * *">every hour</option>
+      <option value="0 */6 * * *">every 6 hours</option>
+      <option value="0 3 * * *">daily at 03:00 UTC</option>
+      <option value="0 3 * * 0">weekly, Sunday 03:00 UTC</option>
+    </datalist>
+    <button type="submit" name="action" value="save">Save schedule</button>
+    {{if .Data.Schedule}}<button type="submit" name="action" value="disable" class="secondary" formnovalidate>Turn off</button>{{end}}
+  </form>
+  <p class="muted">Cron format <code>minute hour day month weekday</code>, in UTC, at most once per hour. Examples: <code>0 3 * * *</code> daily at 03:00, <code>0 */6 * * *</code> every 6 hours.</p>
+</section>
+
+<section class="card">
+  <h2>Snapshots</h2>
+  {{if .Data.Busy}}
+  <p class="warning">A job is running. This page reloads every 5 seconds.</p>
+  {{else}}
+  <form method="post" action="/databases/{{$db.Name}}/snapshots">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <button type="submit">Create snapshot now</button>
+  </form>
+  {{end}}
+  <table>
+    <thead><tr><th>#</th><th>Created (UTC)</th><th>Size</th><th>By</th><th>Actions</th></tr></thead>
+    <tbody>
+    {{range .Data.Snapshots}}
+    <tr>
+      <td>{{.ID}}</td>
+      <td>{{.CreatedAt.UTC.Format "2006-01-02 15:04:05"}} <span class="tag">{{if eq .Kind "scheduled"}}scheduled{{else if eq .Kind "pre_restore"}}before restore{{else}}manual{{end}}</span>{{with .Note}}<br><span class="muted">{{.}}</span>{{end}}</td>
+      <td>{{bytes .SizeBytes}}</td>
+      <td>{{.CreatedBy}}</td>
+      <td class="actions">
+        <a class="button secondary" href="/snapshots/{{.ID}}/download?format=dump">Download .dump</a>
+        <a class="button secondary" href="/snapshots/{{.ID}}/download?format=sql">Download .sql</a>
+        {{if not $.Data.Busy}}<a class="button" href="/snapshots/{{.ID}}/restore">Restore</a>{{end}}
+        <form method="post" action="/snapshots/{{.ID}}/delete" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <button type="submit" class="secondary">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5">No snapshots yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted">Restore a <code>.dump</code> elsewhere with <code>pg_restore --no-owner --no-acl -d &lt;database&gt; file.dump</code> (pg_restore 18 or newer).</p>
+</section>
+
+{{if .Data.Jobs}}
+<section class="card">
+  <h2>Recent jobs</h2>
+  <table>
+    <thead><tr><th>Started (UTC)</th><th>Job</th><th>By</th><th>Status</th></tr></thead>
+    <tbody>
+    {{range .Data.Jobs}}
+    <tr>
+      <td>{{.CreatedAt.UTC.Format "2006-01-02 15:04:05"}}</td>
+      <td>{{if .Scheduled}}scheduled {{end}}{{.Kind}}{{with .SnapshotID}} of #{{.}}{{end}}</td>
+      <td>{{.RequestedBy}}</td>
+      <td>{{.Status}}{{with .Error}}<br><span class="error">{{.}}</span>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+
+<section class="card danger-zone">
+  <h2>Danger zone</h2>
+  <div class="danger-row">
+    <div>
+      <strong>Delete this database</strong>
+      <p class="muted">Deletes <code>{{$db.Name}}</code>, disconnects its clients and removes all its snapshots. This cannot be undone.</p>
+    </div>
+    <form method="post" action="/databases/{{$db.Name}}/delete" class="inline">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <input type="text" name="confirm" placeholder="type {{$db.Name}} to confirm" required autocomplete="off" aria-label="Type {{$db.Name}} to confirm deletion">
+      <button type="submit" class="danger">Delete database</button>
+    </form>
+  </div>
+</section>
+{{end}}

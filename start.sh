@@ -23,6 +23,8 @@ export PG_ADMIN_GROUP=postgres-admins
 # Cloudron usernames that are always admins, separated by commas.
 # TODO: Remove default user james when app goes live
 export PG_ADMINS="james"
+# Snapshots kept per database and type (manual, scheduled, before restore), oldest are deleted first.
+export PG_MAX_SNAPSHOTS=7
 EOF
 fi
 source /app/data/env.sh
@@ -31,7 +33,12 @@ if [[ ! -f "${ALLOWLIST_FILE}" ]]; then
     printf '# Networks allowed to connect to PostgreSQL from outside, one per line.\n# Managed by the admin panel. Manual edits need an app restart.\n' > "${ALLOWLIST_FILE}"
 fi
 
+mkdir -p /app/data/snapshots
 chown -R cloudron:cloudron /app/data
+# written by the worker (postgres), read and deleted by the panel (cloudron)
+chown -R postgres:cloudron /app/data/snapshots
+find /app/data/snapshots -type d -exec chmod 2770 {} +
+find /app/data/snapshots -type f -exec chmod 0640 {} +
 
 echo "==> Copying TLS certificate"
 if [[ ! -f /etc/certs/tls_cert.pem || ! -f /etc/certs/tls_key.pem ]]; then
@@ -85,7 +92,8 @@ log_min_error_statement = panic
 log_timezone = 'UTC'
 timezone = 'UTC'
 EOF
-echo "panel  cloudron  pgpanel" > "${PG_RUN_DIR}/pg_ident.conf"
+# the snapshot worker runs as OS user postgres and dumps/restores as the database owner role
+printf 'panel   cloudron  pgpanel\nworker  postgres  +tenants\n' > "${PG_RUN_DIR}/pg_ident.conf"
 chown postgres:postgres "${PG_RUN_DIR}/postgresql.conf" "${PG_RUN_DIR}/pg_ident.conf"
 
 echo "==> Generating pg_hba.conf"
