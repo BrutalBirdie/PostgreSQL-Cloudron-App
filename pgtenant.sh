@@ -12,8 +12,8 @@ usage() {
 }
 
 validate_name() {
-    if [[ ! "$1" =~ ^[a-z][a-z0-9_]{2,62}$ || "$1" =~ ^pg_ || "$1" == "postgres" || "$1" == "tenants" ]]; then
-        echo "Invalid name '$1': use 3-63 chars of a-z, 0-9, _ starting with a letter; pg_*, postgres and tenants are reserved" >&2
+    if [[ ! "$1" =~ ^[a-z][a-z0-9_]{2,62}$ || "$1" =~ ^pg_ || " postgres pgpanel tenants template0 template1 public " == *" $1 "* ]]; then
+        echo "Invalid name '$1': use 3-63 chars of a-z, 0-9, _ starting with a letter; pg_* and built-in names are reserved" >&2
         exit 1
     fi
 }
@@ -58,12 +58,13 @@ CREATE DATABASE :"name" OWNER :"name";
 REVOKE ALL ON DATABASE :"name" FROM PUBLIC;
 GRANT CONNECT, TEMPORARY ON DATABASE :"name" TO :"name";
 EOF
+    pg_grant_tenants_to_panel
     print_connection "$2" "${password}"
     ;;
 passwd)
     [[ $# -eq 2 ]] || usage
     validate_name "$2"
-    is_tenant=$(psql_admin -At -d postgres -v name="$2" <<< "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member JOIN pg_roles g ON g.oid = m.roleid WHERE r.rolname = :'name' AND g.rolname = 'tenants'")
+    is_tenant=$(psql_admin -At -d postgres -v name="$2" <<< "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member JOIN pg_roles g ON g.oid = m.roleid WHERE r.rolname = :'name' AND r.rolname <> 'pgpanel' AND g.rolname = 'tenants'")
     [[ "${is_tenant}" == "1" ]] || { echo "Role '$2' is not a tenant role" >&2; exit 1; }
     password=$(random_password)
     psql_admin -q -d postgres -v name="$2" -v verifier="$(scram_verifier "${password}")" <<'EOF'
@@ -74,7 +75,7 @@ EOF
 list)
     psql_admin -d postgres -c "SELECT r.rolname AS role, r.rolconnlimit AS conn_limit, string_agg(d.datname, ', ' ORDER BY d.datname) AS databases
         FROM pg_roles r JOIN pg_auth_members m ON m.member = r.oid JOIN pg_roles g ON g.oid = m.roleid AND g.rolname = 'tenants'
-        LEFT JOIN pg_database d ON d.datdba = r.oid GROUP BY r.rolname, r.rolconnlimit ORDER BY r.rolname"
+        LEFT JOIN pg_database d ON d.datdba = r.oid WHERE r.rolname <> 'pgpanel' GROUP BY r.rolname, r.rolconnlimit ORDER BY r.rolname"
     ;;
 *)
     usage

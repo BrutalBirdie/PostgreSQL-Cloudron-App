@@ -1,3 +1,11 @@
+FROM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS panel
+
+WORKDIR /src
+COPY panel/go.mod panel/go.sum ./
+RUN go mod download
+COPY panel/ ./
+RUN go test ./... && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/panel .
+
 FROM cloudron/base:6.0.0@sha256:9bed4c8fa880645f8e669041ee28febe941481d00e9445e3e5a5483cb541d09b
 
 ARG POSTGRESQL_VERSION=18.6-0ubuntu0.26.04.1
@@ -21,7 +29,7 @@ COPY nginx/app.conf /etc/nginx/sites-enabled/app.conf
 COPY supervisor/* /etc/supervisor/conf.d/
 RUN ln -sf /run/supervisord.log /var/log/supervisor/supervisord.log
 
+COPY --from=panel /out/panel /app/code/panel
 COPY start.sh backup.sh restore.sh pgtenant.sh common.sh /app/pkg/
-COPY www /app/code/www
 
 CMD [ "/app/pkg/start.sh" ]

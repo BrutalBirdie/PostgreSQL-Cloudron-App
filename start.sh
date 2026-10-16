@@ -6,24 +6,32 @@ source /app/pkg/common.sh
 
 readonly ALLOWLIST_FILE="/app/data/allowed_networks.txt"
 
-mkdir -p /run/nginx "${PG_RUN_DIR}/tls"
-chown postgres:postgres "${PG_RUN_DIR}"
+mkdir -p /run/nginx "${PG_RUN_DIR}/tls" "${PG_RUN_DIR}/hba"
+chown postgres:postgres "${PG_RUN_DIR}" "${PG_RUN_DIR}/tls"
+chown cloudron:cloudron "${PG_RUN_DIR}/hba"
 pg_prepare_dirs
 
 if [[ ! -f "${PGDATA}/PG_VERSION" ]]; then
     pg_initdb
 fi
 
-if [[ ! -f "${ALLOWLIST_FILE}" ]]; then
-    cat > "${ALLOWLIST_FILE}" <<'EOF'
-# Networks allowed to connect to PostgreSQL from outside, one per line.
-# Examples:
-#   203.0.113.10
-#   198.51.100.0/24
-#   2001:db8::/48
-# Restart the app after editing. An empty list blocks all remote connections.
+if [[ ! -f /app/data/env.sh ]]; then
+    cat > /app/data/env.sh <<'EOF'
+# Restart the app after changing these.
+# Members of this Cloudron group are admins in the panel.
+export PG_ADMIN_GROUP=postgres-admins
+# Cloudron usernames that are always admins, separated by commas.
+# TODO: Remove default user james when app goes live
+export PG_ADMINS="james"
 EOF
 fi
+source /app/data/env.sh
+
+if [[ ! -f "${ALLOWLIST_FILE}" ]]; then
+    printf '# Networks allowed to connect to PostgreSQL from outside, one per line.\n# Managed by the admin panel. Manual edits need an app restart.\n' > "${ALLOWLIST_FILE}"
+fi
+
+chown -R cloudron:cloudron /app/data
 
 echo "==> Copying TLS certificate"
 if [[ ! -f /etc/certs/tls_cert.pem || ! -f /etc/certs/tls_key.pem ]]; then
@@ -44,13 +52,12 @@ memory_mb=$((memory_limit / 1024 / 1024))
 echo "==> Generating postgresql.conf (memory limit ${memory_mb}MB)"
 cat > "${PG_RUN_DIR}/postgresql.conf" <<EOF
 data_directory = '${PGDATA}'
-hba_file = '${PG_RUN_DIR}/pg_hba.conf'
-ident_file = '${PGDATA}/pg_ident.conf'
+hba_file = '${PG_RUN_DIR}/hba/pg_hba.conf'
+ident_file = '${PG_RUN_DIR}/pg_ident.conf'
 
 listen_addresses = '*'
 port = 5432
 unix_socket_directories = '${PG_SOCKET_DIR}'
-unix_socket_permissions = 0770
 max_connections = 100
 authentication_timeout = 10s
 tcp_keepalives_idle = 60
@@ -78,34 +85,11 @@ log_min_error_statement = panic
 log_timezone = 'UTC'
 timezone = 'UTC'
 EOF
+echo "panel  cloudron  pgpanel" > "${PG_RUN_DIR}/pg_ident.conf"
+chown postgres:postgres "${PG_RUN_DIR}/postgresql.conf" "${PG_RUN_DIR}/pg_ident.conf"
 
 echo "==> Generating pg_hba.conf"
-{
-    echo "local   all  postgres                 peer"
-    echo "local   all  all                      reject"
-    echo "host    all  postgres  0.0.0.0/0      reject"
-    echo "host    all  postgres  ::/0           reject"
-    while read -r line; do
-        cidr="${line%%#*}"
-        cidr="${cidr//[[:space:]]/}"
-        [[ -z "${cidr}" ]] && continue
-        if [[ "${cidr}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            cidr="${cidr}/32"
-        elif [[ "${cidr}" =~ ^[0-9a-fA-F:]+$ && "${cidr}" == *:* ]]; then
-            cidr="${cidr}/128"
-        fi
-        if [[ ! "${cidr}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ && ! "${cidr}" =~ ^[0-9a-fA-F:]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$ ]]; then
-            echo "==> Ignoring invalid allowlist entry: ${line}" >&2
-            continue
-        fi
-        [[ "${cidr}" == "0.0.0.0/0" || "${cidr}" == "::/0" ]] && echo "==> WARNING: allowlist entry ${cidr} opens PostgreSQL to the whole internet" >&2
-        echo "==> Allowing ${cidr}" >&2
-        echo "hostssl all  +tenants  ${cidr}  scram-sha-256"
-    done < "${ALLOWLIST_FILE}"
-    echo "host    all  all       0.0.0.0/0      reject"
-    echo "host    all  all       ::/0           reject"
-} > "${PG_RUN_DIR}/pg_hba.conf"
-chown postgres:postgres "${PG_RUN_DIR}/postgresql.conf" "${PG_RUN_DIR}/pg_hba.conf"
+gosu cloudron:cloudron /app/code/panel render-hba --allowlist "${ALLOWLIST_FILE}" --out "${PG_RUN_DIR}/hba/pg_hba.conf"
 
 echo "==> Applying baseline privileges"
 pg_start_local
@@ -114,13 +98,31 @@ DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'tenants') THEN
         CREATE ROLE tenants NOLOGIN;
     END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pgpanel') THEN
+        CREATE ROLE pgpanel LOGIN;
+    END IF;
 END $$;
+ALTER ROLE pgpanel LOGIN NOSUPERUSER CREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
+-- roles created by pgpanel are granted back to it with SET, needed for CREATE DATABASE ... OWNER
+ALTER ROLE pgpanel SET createrole_self_grant = 'set';
+GRANT tenants TO pgpanel WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+
+SELECT 'CREATE DATABASE pgpanel OWNER pgpanel' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'pgpanel') \gexec
+REVOKE ALL ON DATABASE pgpanel FROM PUBLIC;
 REVOKE ALL ON DATABASE postgres FROM PUBLIC;
 REVOKE ALL ON DATABASE template1 FROM PUBLIC;
+-- a database with default privileges lets every role connect, e.g. after an interrupted create
+SELECT format('REVOKE ALL ON DATABASE %1$I FROM PUBLIC; GRANT CONNECT, TEMPORARY ON DATABASE %1$I TO %2$I', d.datname, r.rolname)
+FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba WHERE d.datacl IS NULL AND NOT d.datistemplate \gexec
 EOF
+# function and view privileges are per database, the panel only connects to pgpanel
+psql_admin -d pgpanel <<'EOF'
+GRANT EXECUTE ON FUNCTION pg_reload_conf() TO pgpanel;
+GRANT EXECUTE ON FUNCTION pg_hba_file_rules() TO pgpanel;
+GRANT SELECT ON pg_hba_file_rules TO pgpanel;
+EOF
+pg_grant_tenants_to_panel
 pg_stop_local
-
-chown -R cloudron:cloudron /app/data
 
 echo "==> Starting supervisor"
 exec /usr/bin/supervisord --configuration /etc/supervisor/supervisord.conf --nodaemon -i PostgreSQL

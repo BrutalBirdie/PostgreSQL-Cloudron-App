@@ -1,0 +1,113 @@
+{{define "content"}}
+{{$csrf := .Session.CSRFToken}}
+<h1>Admin</h1>
+
+<section class="card">
+  <h2>Allowed networks</h2>
+  <p>Remote clients can only connect from these addresses or networks. An empty list blocks all remote connections. One entry per line, for example <code>203.0.113.10</code> or <code>2001:db8::/48</code>.</p>
+  <form method="post" action="/admin/allowlist">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <textarea name="allowlist" rows="6" spellcheck="false" aria-label="Allowed networks">{{.Data.Allowlist}}</textarea>
+    <button type="submit">Save and apply</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Create role</h2>
+  <form method="post" action="/admin/roles" class="grid">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label>Name <input type="text" name="name" required pattern="[a-z][a-z0-9_]{2,62}" autocomplete="off"></label>
+    <label>Owner (Cloudron username) <input type="text" name="owner" autocomplete="off"></label>
+    <label>Connection limit <input type="number" name="conn_limit" value="20" min="1" max="1000"></label>
+    <label class="check"><input type="checkbox" name="with_database" checked> Create a database with the same name</label>
+    <div class="reveal">
+      <label class="check"><input type="checkbox" name="allow_create_db"> Allow the owner to create databases</label>
+      <label class="when-checked">Maximum databases for this role, existing ones included <input type="number" name="max_databases" value="3" min="1" max="100"></label>
+    </div>
+    <button type="submit">Create role</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Roles</h2>
+  <table>
+    <thead><tr><th>Role</th><th>Databases</th><th>Owner, connections, self-service databases</th><th>Password</th><th>Delete</th></tr></thead>
+    <tbody>
+    {{range .Data.Roles}}
+    <tr>
+      <td><code>{{.Name}}</code></td>
+      <td>{{range .Databases}}<code>{{.}}</code> {{else}}<span class="muted">none</span>{{end}}</td>
+      <td>
+        <form method="post" action="/admin/roles/{{.Name}}/update" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="text" name="owner" value="{{.Owner}}" placeholder="unassigned" aria-label="Owner of {{.Name}}">
+          <input type="number" name="conn_limit" value="{{.ConnLimit}}" min="1" max="1000" aria-label="Connection limit of {{.Name}}" title="Connection limit">
+          <span class="reveal inline">
+            <label class="check" title="Allow the owner to create databases"><input type="checkbox" name="allow_create_db"{{if .MaxDatabases}} checked{{end}}> DBs</label>
+            <input class="when-checked" type="number" name="max_databases" value="{{if .MaxDatabases}}{{.MaxDatabases}}{{else}}3{{end}}" min="1" max="100" aria-label="Maximum databases of {{.Name}}" title="Maximum databases">
+          </span>
+          <button type="submit">Save</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/roles/{{.Name}}/password" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <button type="submit">New password</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/admin/roles/{{.Name}}/delete" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="text" name="confirm" placeholder="type {{.Name}}" required autocomplete="off" aria-label="Confirm deletion of {{.Name}}">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5">No roles yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Create database</h2>
+  {{if .Data.Roles}}
+  <form method="post" action="/admin/databases" class="grid">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label>Name <input type="text" name="name" required pattern="[a-z][a-z0-9_]{2,62}" autocomplete="off"></label>
+    <label>Owner role
+      <select name="owner">{{range .Data.Roles}}<option value="{{.Name}}">{{.Name}}</option>{{end}}</select>
+    </label>
+    <button type="submit">Create database</button>
+  </form>
+  {{else}}
+  <p>Create a role first.</p>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Databases</h2>
+  <table>
+    <thead><tr><th>Database</th><th>Owner role</th><th>Delete</th></tr></thead>
+    <tbody>
+    {{range .Data.Databases}}
+    <tr>
+      <td><code>{{.Name}}</code></td>
+      <td><code>{{.Owner}}</code></td>
+      <td>
+        <form method="post" action="/databases/{{.Name}}/delete" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="hidden" name="back" value="admin">
+          <input type="text" name="confirm" placeholder="type {{.Name}}" required autocomplete="off" aria-label="Confirm deletion of {{.Name}}">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="3">No databases yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

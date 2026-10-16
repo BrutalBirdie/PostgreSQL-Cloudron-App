@@ -1,4 +1,0 @@
-body { font-family: system-ui, sans-serif; background: #f6f7f9; color: #1f2328; margin: 0; }
-main { max-width: 640px; margin: 64px auto; padding: 0 16px; line-height: 1.5; }
-code { background: #e8eaee; padding: 1px 4px; border-radius: 3px; }
-@media (prefers-color-scheme: dark) { body { background: #16181c; color: #e6e8eb; } code { background: #2a2e35; } }

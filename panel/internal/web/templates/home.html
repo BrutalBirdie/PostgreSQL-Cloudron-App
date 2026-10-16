@@ -1,0 +1,48 @@
+{{define "content"}}
+{{$csrf := .Session.CSRFToken}}
+<h1>My databases</h1>
+{{if not .Data.Roles}}
+<p>No database roles are assigned to you yet. Ask an administrator to create one.</p>
+{{end}}
+{{range .Data.Roles}}
+{{$role := .Name}}
+<section class="card">
+  <h2>Role <code>{{.Name}}</code></h2>
+  <p class="muted">Up to {{.ConnLimit}} connections.{{if .MaxDatabases}} {{len .Databases}} of {{.MaxDatabases}} databases used.{{end}}</p>
+  <form method="post" action="/roles/{{.Name}}/password">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <button type="submit">Generate new password</button>
+    <span class="muted">The old password stops working immediately.</span>
+  </form>
+  {{if .Databases}}
+  <table>
+    <thead><tr><th>Database</th><th>Connection URL (add the password)</th><th></th></tr></thead>
+    <tbody>
+    {{range .Databases}}
+    <tr>
+      <td><code>{{.}}</code></td>
+      <td><code class="wrap">{{connURL $role .}}</code></td>
+      <td>
+        <form method="post" action="/databases/{{.}}/delete" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="text" name="confirm" placeholder="type {{.}} to delete" required autocomplete="off" aria-label="Confirm deletion of {{.}}">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p>This role owns no databases.</p>
+  {{end}}
+  {{if and .MaxDatabases (lt (len .Databases) .MaxDatabases)}}
+  <form method="post" action="/roles/{{.Name}}/databases" class="inline">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="text" name="name" required pattern="[a-z][a-z0-9_]{2,62}" placeholder="new database name" autocomplete="off" aria-label="New database name">
+    <button type="submit">Create database</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
+{{end}}

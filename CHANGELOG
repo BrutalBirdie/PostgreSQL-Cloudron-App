@@ -1,2 +1,13 @@
 [0.1.0]
 * Initial version with PostgreSQL 18.6
+
+[0.2.0]
+* Add web panel with Cloudron login
+* Admins create roles and databases, assign roles to users, and manage the allowed networks
+* Users rotate passwords and delete databases of their own roles
+* Audit log of all changes
+
+[0.3.0]
+* Admins can be set by username with PG_ADMINS in /app/data/env.sh
+* Roles can be allowed to create their own databases up to a set maximum
+* Fix form submissions being rejected by the browser origin check

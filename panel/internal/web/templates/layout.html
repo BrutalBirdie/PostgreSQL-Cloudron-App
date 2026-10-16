@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/logo.png">
+</head>
+<body>
+<header>
+  <a class="brand" href="/"><img src="/static/logo.png" alt="" width="28" height="28"> PostgreSQL</a>
+  {{with .Session}}
+  <nav>
+    <a href="/">My databases</a>
+    {{if .IsAdmin}}<a href="/admin">Admin</a><a href="/admin/audit">Audit log</a>{{end}}
+    {{if $.PGAdminPath}}<a href="{{$.PGAdminPath}}/">pgAdmin</a>{{end}}
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRFToken}}">
+      <button type="submit" class="link">Log out {{.DisplayName}}</button>
+    </form>
+  </nav>
+  {{end}}
+</header>
+<main>
+{{template "content" .}}
+</main>
+</body>
+</html>
