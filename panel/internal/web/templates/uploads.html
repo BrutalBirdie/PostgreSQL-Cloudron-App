@@ -7,11 +7,18 @@
 
 <section class="card">
   <h2>Upload a dump</h2>
-  <form method="post" action="/roles/{{$role.Name}}/uploads" enctype="multipart/form-data" class="inline">
+  <form id="upload-form" method="post" action="/roles/{{$role.Name}}/uploads" enctype="multipart/form-data" class="grid">
     <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label>SHA-256 of the dump where it was created (optional)
+      <input type="text" name="sha256" spellcheck="false" autocomplete="off" placeholder="sha256sum prod.dump">
+    </label>
     <input type="file" name="file" required aria-label="Dump file">
     <button type="submit">Upload</button>
+    <progress id="upload-progress" hidden></progress>
+    <p id="upload-status" class="muted" aria-live="polite"></p>
   </form>
+  <p class="muted">Your browser calculates the SHA-256 of the file before uploading, the server checks it after the upload and discards the file on a mismatch.
+  The optional field also catches a dump that was damaged before it reached this computer: run <code>sha256sum</code> (Linux, macOS) or <code>Get-FileHash</code> (PowerShell) where the dump was made.</p>
   <p class="muted">Use <code>pg_dump --format=custom</code> (or <code>--format=tar</code>). Plain SQL files cannot be imported on the server.
   The page waits until the upload has finished. For very large files, an administrator can copy them with the Cloudron File Manager to <code>{{.Data.Dir}}/</code>, they show up here automatically.</p>
 </section>
@@ -23,7 +30,14 @@
     <tbody>
     {{range .Data.Uploads}}
     <tr>
-      <td><code>{{.FileName}}</code>{{if .Format}} <span class="tag">{{.Format}}</span>{{end}}{{with .FormatErr}}<br><span class="error">{{.}}</span>{{end}}</td>
+      <td><code>{{.FileName}}</code>{{if .Format}} <span class="tag">{{.Format}}</span>{{end}}{{with .FormatErr}}<br><span class="error">{{.}}</span>{{end}}
+        <br><span class="muted">SHA-256 {{if .SHA256}}<code class="wrap">{{.SHA256}}</code>{{else}}being calculated{{end}}</span>
+        {{if eq .VerifiedBy "user"}}<span class="tag">matches your checksum</span>{{else if eq .VerifiedBy "browser"}}<span class="tag">matches browser checksum</span>{{else if .SHA256}}
+        <form method="post" action="/uploads/{{.ID}}/verify" class="inline">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="text" name="sha256" spellcheck="false" autocomplete="off" placeholder="your SHA-256" aria-label="Your SHA-256 of {{.FileName}}">
+          <button type="submit" class="secondary">Verify</button>
+        </form>{{end}}</td>
       <td>{{bytes .SizeBytes}}</td>
       <td>{{.FirstSeen.UTC.Format "2006-01-02 15:04"}} UTC<br><span class="muted">by {{.UploadedBy}}</span></td>
       <td>{{if .Keep}}kept{{else}}{{.Expires.UTC.Format "2006-01-02 15:04"}} UTC{{end}}</td>
@@ -52,4 +66,6 @@
   </table>
   {{if not $role.Databases}}<p class="muted">This role has no database to import into.</p>{{end}}
 </section>
+<script src="/static/vendor/hash-wasm-sha256-4.12.0.umd.min.js"></script>
+<script src="/static/upload.js"></script>
 {{end}}

@@ -64,10 +64,11 @@ type Server struct {
 
 	hbaMu    sync.Mutex
 	uploadMu sync.Mutex
+	hashWake chan struct{}
 }
 
 func New(cfg Config, st *store.Store, log *slog.Logger) (*Server, error) {
-	s := &Server{cfg: cfg, store: st, log: log, pages: map[string]*template.Template{}}
+	s := &Server{cfg: cfg, store: st, log: log, pages: map[string]*template.Template{}, hashWake: make(chan struct{}, 1)}
 	funcs := template.FuncMap{"connURL": s.connURL, "bytes": humanBytes}
 	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error", "database", "restore", "uploads", "import"} {
 		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
@@ -104,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /roles/{name}/uploads", s.requireLoginStream(s.uploadFile))
 	mux.Handle("POST /uploads/{id}/keep", s.requireLogin(s.keepUpload))
 	mux.Handle("POST /uploads/{id}/delete", s.requireLogin(s.deleteUpload))
+	mux.Handle("POST /uploads/{id}/verify", s.requireLogin(s.verifyUpload))
 	mux.Handle("GET /uploads/{id}/import", s.requireLogin(s.importPage))
 	mux.Handle("POST /uploads/{id}/import", s.requireLogin(s.importUpload))
 
@@ -120,7 +122,8 @@ func (s *Server) Handler() http.Handler {
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		// wasm-unsafe-eval lets the vendored hash-wasm compile its WebAssembly, eval stays blocked
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
 		// no-referrer would make browsers send "Origin: null" on form posts

@@ -133,7 +133,12 @@ chmod -R a+rX "${work}/files"
 browser uploads
 # the File Manager copies with the owner of the parent directory
 docker exec "${app}" install -o cloudron -g postgres -m 0644 /app/data/env.sh /app/data/uploads/e2e_bob/manual.dump
+manual_sha=$(docker exec "${app}" sha256sum /app/data/uploads/e2e_bob/manual.dump | cut -d' ' -f1)
+yq -i -p json -o json ".manualSha = \"${manual_sha}\"" "${work}/state.json"
 browser uploads2
+# change one byte but keep size and mtime, so only the checksum can notice
+docker exec "${app}" bash -c 'f=/app/data/uploads/e2e_bob/import_me-1.dump; m=$(stat -c %y "$f"); printf X | dd of="$f" bs=1 seek=200 conv=notrunc status=none; touch -d "$m" "$f"'
+browser tampered
 expect "import loaded the dump" "^from dump$" "$(pg "${new_pw}" e2e_bob e2e_bob 'select v from imported_marker')"
 expect "imported objects owned by bob" "^e2e_bob$" "$(pg "${new_pw}" e2e_bob e2e_bob "select tableowner from pg_tables where tablename = 'imported_marker'")"
 expect "plain SQL never executed" "^no$" "$(docker exec "${app}" bash -c 'test -e /tmp/pwned && echo yes || echo no')"
@@ -180,7 +185,7 @@ expect "allowlist survives restore" "${app_ip}" "$(docker exec "${app}" cat /run
 browser afterRestore
 
 echo "==> Logs"
-expect "no panel or worker errors" "^$" "$(docker logs "${app}" 2>&1 | grep '"level":"ERROR"' || true)"
+expect "no panel or worker errors" "^$" "$(docker logs "${app}" 2>&1 | grep '"level":"ERROR"' | grep -v 'the file changed since it was uploaded' || true)"
 expect "no PostgreSQL errors except expected test failures" "^$" "$(docker logs "${app}" 2>&1 | grep -E ' (ERROR|PANIC):' | grep -vE 'permission denied (to create database|to use|for)|must be superuser|role "postgres" already exists|COPY to or from an external program' || true)"
 
 echo

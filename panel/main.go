@@ -170,6 +170,7 @@ func serve(log *slog.Logger) error {
 		return err
 	}
 	go srv.PurgeLoop(ctx)
+	go srv.HashLoop(ctx)
 
 	httpServer := &http.Server{
 		Addr:              env("PANEL_LISTEN", "127.0.0.1:3000"),

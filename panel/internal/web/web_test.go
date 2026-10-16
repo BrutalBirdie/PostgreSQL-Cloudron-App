@@ -26,17 +26,18 @@ func TestPagesRender(t *testing.T) {
 	admin := &store.Session{Username: "ann", DisplayName: "Ann", IsAdmin: true, CSRFToken: "tok"}
 	roles := []store.Role{{Name: "app_one", ConnLimit: 20, Owner: "ann", MaxDatabases: 3, Databases: []string{"app_one"}}}
 	pages := map[string]any{
-		"login":   nil,
-		"home":    homeData{Roles: roles},
-		"admin":   adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n"},
-		"secret":  secretData{Role: "app_one", Database: "app_one", Password: "pw"},
-		"audit":   []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}},
-		"error":   nil,
+		"login":  nil,
+		"home":   homeData{Roles: roles},
+		"admin":  adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n"},
+		"secret": secretData{Role: "app_one", Database: "app_one", Password: "pw"},
+		"audit":  []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}},
+		"error":  nil,
 		"uploads": uploadsData{Role: roles[0], KeepDays: 8, Uploads: []uploadView{
-			{Upload: store.Upload{ID: 1, FileName: "a.dump", SizeBytes: 10, FirstSeen: time.Now()}, Format: "custom"},
+			{Upload: store.Upload{ID: 1, FileName: "a.dump", SizeBytes: 10, FirstSeen: time.Now(), SHA256: "ab", VerifiedBy: "browser"}, Format: "custom"},
+			{Upload: store.Upload{ID: 3, FileName: "c.dump", SizeBytes: 10, FirstSeen: time.Now(), SHA256: "ab"}, Format: "custom"},
 			{Upload: store.Upload{ID: 2, FileName: "b.sql", Keep: true, FirstSeen: time.Now()}, FormatErr: "plain SQL"},
 		}},
-		"import": importData{Role: roles[0], Database: "app_one", Upload: uploadView{Upload: store.Upload{ID: 1, FileName: "a.dump"}, Format: "custom"}},
+		"import":  importData{Role: roles[0], Database: "app_one", Upload: uploadView{Upload: store.Upload{ID: 1, FileName: "a.dump"}, Format: "custom"}},
 		"restore": restoreData{Snapshot: store.Snapshot{ID: 7, CreatedAt: time.Now(), SizeBytes: 10}, Database: store.Database{Name: "app_one", Owner: "app_one"}},
 		"database": databaseData{
 			Database:     store.Database{Name: "app_one", Owner: "app_one"},

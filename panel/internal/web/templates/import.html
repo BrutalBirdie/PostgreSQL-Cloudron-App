@@ -9,7 +9,10 @@
   {{else}}
   <dl>
     <dt>File</dt><dd><code>{{$up.FileName}}</code>, {{bytes $up.SizeBytes}}, {{$up.Format}} format</dd>
+    <dt>SHA-256</dt><dd>{{if $up.SHA256}}<code class="wrap">{{$up.SHA256}}</code>{{else}}being calculated{{end}}</dd>
+    <dt>Checked</dt><dd>{{if eq $up.VerifiedBy "user"}}matches your checksum{{else if eq $up.VerifiedBy "browser"}}matches the checksum your browser calculated{{else}}not compared with a checksum from your side{{end}}</dd>
   </dl>
+  <p class="muted">The worker calculates the checksum again before importing and stops if the file changed.</p>
   <form method="post" action="/uploads/{{$up.ID}}/import" class="grid">
     <input type="hidden" name="csrf" value="{{.Session.CSRFToken}}">
     <label>Target database

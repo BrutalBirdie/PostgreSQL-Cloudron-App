@@ -2,6 +2,7 @@
 // separate process so run.sh can check PostgreSQL in between.
 import { chromium } from 'playwright';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 
 const BASE = 'http://localhost:8000';
 const STATE = '/work/state.json';
@@ -177,39 +178,71 @@ const steps = {
 
     async uploads() {
         const { page, save } = await session('bob');
+        const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+        const dump = '/work/files/import me.dump';
         await page.goto(BASE + '/');
         await page.click('a:has-text("Uploads and import")');
         await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
 
-        const upload = async (file) => {
-            await page.setInputFiles('input[type=file]', file);
-            await page.click('form[enctype="multipart/form-data"] button');
-            await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
+        // upload.js navigates to the same URL when done, so wait for the navigation itself
+        const upload = async (p, file, userSum = '') => {
+            await p.fill('input[name=sha256]', userSum);
+            await p.setInputFiles('input[type=file]', file);
+            const done = Promise.race([p.waitForEvent('framenavigated'), p.waitForSelector('#upload-status.error')]);
+            await p.click('#upload-form button');
+            await done;
+            await p.waitForLoadState();
         };
-        await upload('/work/files/import me.dump');
-        await upload('/work/files/evil.sql');
-        await upload('/work/files/big.bin');
+        const row = (name) => page.locator('tbody tr', { has: page.locator(`code:text-is("${name}")`) });
+
+        await upload(page, dump);
+        await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
         let html = await page.content();
         check('custom dump listed with sanitized name', html.includes('<code>import_me.dump</code> <span class="tag">custom</span>'));
+        check('browser checksum sent and matched', (await row('import_me.dump').textContent()).includes('matches browser checksum'));
+        check('stored SHA-256 is the real one', (await row('import_me.dump').textContent()).includes(sha(dump)));
+
+        await upload(page, '/work/files/big.bin', '0'.repeat(64));
+        await page.waitForSelector('#upload-status.error');
+        const status = await page.textContent('#upload-status');
+        check('wrong user checksum rejects the upload', status.includes('The file was not saved') && status.includes(sha('/work/files/big.bin')), status);
+        await page.goto(BASE + '/roles/e2e_bob/uploads');
+        check('rejected file not stored', (await row('big.bin').count()) === 0);
+
+        await upload(page, '/work/files/big.bin', `${sha('/work/files/big.bin').toUpperCase()}  big.bin`);
+        await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
+        check('large file accepted by nginx', (await row('big.bin').textContent()).includes('3.0 MiB'));
+        check('user checksum in sha256sum format matched', (await row('big.bin').textContent()).includes('matches your checksum'));
+
+        const plain = await browser.newContext({ storageState: '/work/bob.json', javaScriptEnabled: false });
+        const noJs = await plain.newPage();
+        await noJs.goto(BASE + '/roles/e2e_bob/uploads');
+        await noJs.setInputFiles('input[type=file]', '/work/files/evil.sql');
+        await noJs.click('#upload-form button');
+        await noJs.waitForURL(BASE + '/roles/e2e_bob/uploads');
+        check('upload works without JavaScript', (await noJs.content()).includes('<code>evil.sql</code>'));
+        await plain.close();
+        await page.goto(BASE + '/roles/e2e_bob/uploads');
+        html = await page.content();
         check('plain SQL flagged as not importable', html.includes('plain SQL files cannot be imported'));
-        check('large file accepted by nginx', html.includes('<code>big.bin</code>') && html.includes('3.0 MiB'));
+        check('no-JS upload is hashed but not verified', (await row('evil.sql').textContent()).includes(sha('/work/files/evil.sql')) && (await row('evil.sql').locator('form[action$="/verify"]').count()) === 1);
         check('only importable files have an import button', (await page.locator('form[action$="/import"]').count()) === 1);
 
-        const row = page.locator('tbody tr', { hasText: 'import_me.dump' });
-        state.bobUpload = (await row.locator('form[action$="/import"]').getAttribute('action')).split('/')[2];
-        await row.locator('form[action$="/keep"] button').click();
+        state.bobUpload = (await row('import_me.dump').locator('form[action$="/import"]').getAttribute('action')).split('/')[2];
+        await row('import_me.dump').locator('form[action$="/keep"] button').click();
         await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
-        check('keep toggled', (await page.locator('tbody tr', { hasText: 'import_me.dump' }).textContent()).includes('kept'));
+        check('keep toggled', (await row('import_me.dump').textContent()).includes('kept'));
 
-        await upload('/work/files/import me.dump');
-        check('second upload with the same name is not overwritten', (await page.content()).includes('<code>import_me-1.dump</code>'));
+        await upload(page, dump);
+        await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
+        check('second upload with the same name is not overwritten', (await row('import_me-1.dump').count()) === 1);
 
-        const token = await csrf(page);
         const noToken = await page.request.post(BASE + '/roles/e2e_bob/uploads', { multipart: { file: { name: 'x.dump', mimeType: 'application/octet-stream', buffer: Buffer.from('PGDMP') } } });
         check('upload without csrf rejected', noToken.status() === 403, String(noToken.status()));
 
-        await page.locator('tbody tr', { hasText: 'import_me.dump' }).first().locator('form[action$="/import"] button').click();
+        await row('import_me.dump').locator('form[action$="/import"] button').click();
         await page.waitForURL(/\/uploads\/\d+\/import/);
+        check('import page shows the check', (await page.content()).includes('matches the checksum your browser calculated'));
         await page.selectOption('select[name=database]', 'e2e_bob');
         await page.fill('input[name=confirm]', 'e2e_bob');
         await page.click('button:has-text("Import")');
@@ -223,10 +256,37 @@ const steps = {
 
     async uploads2() {
         const { page, save } = await session('bob');
+        const row = (name) => page.locator('tbody tr', { has: page.locator(`code:text-is("${name}")`) });
+        let text = '';
+        for (let i = 0; i < 20 && !text.includes(state.manualSha); i++) {
+            await page.goto(BASE + '/roles/e2e_bob/uploads');
+            text = (await row('manual.dump').count()) ? await row('manual.dump').textContent() : '';
+            if (!text.includes(state.manualSha)) await page.waitForTimeout(1000);
+        }
+        check('file manager copy picked up and hashed', text.includes('by file manager') && text.includes(state.manualSha), text.slice(0, 200));
+        await row('manual.dump').locator('input[name=sha256]').fill('f'.repeat(64));
+        await row('manual.dump').locator('form[action$="/verify"] button').click();
+        check('wrong checksum reported', (await page.content()).includes('Checksum mismatch'));
         await page.goto(BASE + '/roles/e2e_bob/uploads');
+        await row('manual.dump').locator('input[name=sha256]').fill(state.manualSha);
+        await row('manual.dump').locator('form[action$="/verify"] button').click();
+        await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
+        check('file manager copy verified', (await row('manual.dump').textContent()).includes('matches your checksum'));
+        await save();
+    },
+
+    async tampered() {
+        const { page, save } = await session('bob');
+        await page.goto(BASE + '/roles/e2e_bob/uploads');
+        const row = page.locator('tbody tr', { has: page.locator('code:text-is("import_me-1.dump")') });
+        await row.locator('form[action$="/import"] button').click();
+        await page.waitForURL(/\/uploads\/\d+\/import/);
+        await page.fill('input[name=confirm]', 'e2e_bob');
+        await page.click('button:has-text("Import")');
+        await page.waitForURL(BASE + '/databases/e2e_bob');
+        await waitForJobs(page, BASE + '/databases/e2e_bob');
         const html = await page.content();
-        check('file manager copy picked up', html.includes('<code>manual.dump</code>') && html.includes('by file manager'));
-        check('non-archive from file manager not importable', (await page.locator('tbody tr', { hasText: 'manual.dump' }).locator('form[action$="/import"]').count()) === 0);
+        check('import of a file changed on disk refused', html.includes('the file changed since it was uploaded'), html.match(/<span class="error">[^<]*/)?.[0] ?? '');
         await save();
     },
 

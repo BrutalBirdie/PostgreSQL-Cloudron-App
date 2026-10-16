@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -55,11 +57,15 @@ func (s *Server) syncUploads(ctx context.Context, role string) error {
 	if err != nil {
 		return err
 	}
-	sizes := make(map[string]int64, len(files))
+	states := make(map[string]store.FileState, len(files))
 	for _, f := range files {
-		sizes[f.Name] = f.Size
+		states[f.Name] = store.FileState{Size: f.Size, MTime: f.ModTime}
 	}
-	return s.store.SyncUploads(ctx, role, sizes, "file manager")
+	if err := s.store.SyncUploads(ctx, role, states, "file manager"); err != nil {
+		return err
+	}
+	s.wakeHasher()
+	return nil
 }
 
 type uploadView struct {
@@ -115,43 +121,64 @@ func (s *Server) viewUpload(up store.Upload) uploadView {
 	return v
 }
 
-// uploadFile streams a multipart upload to disk. The form sends the CSRF token
-// as the first part, so it is checked before any file data is written.
+// uploadFile streams a multipart upload to disk and hashes it on the way with
+// io.MultiWriter. The CSRF token is the first part, so it is checked before any
+// file data is written. Checksums come from the X-File-SHA256 header (computed
+// by upload.js in the browser) and the optional sha256 form field (computed by
+// the user where the dump was made). A mismatch discards the file.
 func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFrom(r)
 	role, err := s.authorizeRole(r, r.PathValue("name"))
 	if err != nil {
-		s.userError(w, r, err)
+		s.uploadResult(w, r, "", err)
 		return
 	}
 	rc := http.NewResponseController(w)
 	rc.SetReadDeadline(time.Time{})
 	rc.SetWriteDeadline(time.Time{})
 
+	browserSum, err := uploads.NormalizeSHA256(r.Header.Get("X-File-SHA256"))
+	if err != nil {
+		s.uploadResult(w, r, "", badInput("Browser checksum: "+err.Error()+"."))
+		return
+	}
 	mr, err := r.MultipartReader()
 	if err != nil {
-		s.userError(w, r, badInput("Expected a file upload."))
+		s.uploadResult(w, r, "", badInput("Expected a file upload."))
 		return
 	}
 	part, err := mr.NextPart()
 	if err != nil || part.FormName() != "csrf" {
-		s.fail(w, r, http.StatusForbidden, "The request could not be verified. Reload the page and try again.")
+		s.uploadResult(w, r, "", errForbidden)
 		return
 	}
 	token, _ := io.ReadAll(io.LimitReader(part, 256))
 	if !s.validCSRF(r, sess, string(token)) {
-		s.fail(w, r, http.StatusForbidden, "The request could not be verified. Reload the page and try again.")
+		s.uploadResult(w, r, "", errForbidden)
 		return
 	}
-	part, err = mr.NextPart()
-	if err != nil || part.FormName() != "file" || part.FileName() == "" {
-		s.userError(w, r, badInput("Choose a file to upload."))
+	var userSum string
+	for {
+		part, err = mr.NextPart()
+		if err != nil || part.FormName() == "file" {
+			break
+		}
+		if part.FormName() == "sha256" {
+			value, _ := io.ReadAll(io.LimitReader(part, 512))
+			if userSum, err = uploads.NormalizeSHA256(string(value)); err != nil {
+				s.uploadResult(w, r, "", badInput("Your checksum: "+err.Error()+"."))
+				return
+			}
+		}
+	}
+	if err != nil || part.FileName() == "" {
+		s.uploadResult(w, r, "", badInput("Choose a file to upload."))
 		return
 	}
 
 	dir := s.uploadDir(role.Name)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		s.internalError(w, r, err)
+		s.uploadResult(w, r, "", err)
 		return
 	}
 	suffix := make([]byte, 6)
@@ -159,30 +186,170 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 	tmp := filepath.Join(dir, ".uploading-"+hex.EncodeToString(suffix))
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
 	if err != nil {
-		s.internalError(w, r, err)
+		s.uploadResult(w, r, "", err)
 		return
 	}
-	size, copyErr := io.Copy(f, part)
+	hasher := sha256.New()
+	size, copyErr := io.Copy(io.MultiWriter(f, hasher), part)
+	syncErr := f.Sync()
 	closeErr := f.Close()
-	if copyErr != nil || closeErr != nil {
+	if copyErr != nil || syncErr != nil || closeErr != nil {
 		os.Remove(tmp)
-		s.log.Warn("upload aborted", "role", role.Name, "err", errors.Join(copyErr, closeErr))
-		s.userError(w, r, badInput("The upload was interrupted. Try again, or copy large files with the Cloudron File Manager."))
+		s.log.Warn("upload aborted", "role", role.Name, "err", errors.Join(copyErr, syncErr, closeErr))
+		s.uploadResult(w, r, "", badInput("The upload was interrupted. Try again, or copy large files with the Cloudron File Manager."))
 		return
+	}
+	sum := hex.EncodeToString(hasher.Sum(nil))
+	for _, c := range []struct{ name, want string }{{"the checksum calculated by your browser", browserSum}, {"your checksum", userSum}} {
+		if c.want != "" && c.want != sum {
+			os.Remove(tmp)
+			s.log.Warn("upload checksum mismatch", "role", role.Name, "expected", c.want, "got", sum)
+			s.uploadResult(w, r, "", badInput(fmt.Sprintf("The file was not saved: its SHA-256 on the server is %s, %s is %s.", sum, c.name, c.want)))
+			return
+		}
+	}
+	verifiedBy := ""
+	if userSum != "" {
+		verifiedBy = "user"
+	} else if browserSum != "" {
+		verifiedBy = "browser"
 	}
 
 	name, err := s.placeUpload(tmp, dir, uploads.SanitizeName(part.FileName()))
 	if err != nil {
 		os.Remove(tmp)
+		s.uploadResult(w, r, "", err)
+		return
+	}
+	info, err := os.Stat(filepath.Join(dir, name))
+	if err == nil {
+		err = s.store.AddUpload(r.Context(), role.Name, name, store.FileState{Size: info.Size(), MTime: info.ModTime()}, sess.Username, sum, verifiedBy)
+	}
+	if err != nil {
+		s.uploadResult(w, r, "", err)
+		return
+	}
+	s.audit(r, "upload.create", role.Name, fmt.Sprintf("file=%s size=%d sha256=%s verified_by=%s", name, size, sum, verifiedBy))
+	s.uploadResult(w, r, "/roles/"+role.Name+"/uploads", nil)
+}
+
+var errForbidden = errors.New("forbidden")
+
+// uploadResult answers the JavaScript upload with JSON and the plain form with a page.
+func (s *Server) uploadResult(w http.ResponseWriter, r *http.Request, next string, err error) {
+	if !strings.Contains(r.Header.Get("Accept"), "application/json") {
+		switch {
+		case err == nil:
+			http.Redirect(w, r, next, http.StatusSeeOther)
+		case errors.Is(err, errForbidden):
+			s.fail(w, r, http.StatusForbidden, "The request could not be verified. Reload the page and try again.")
+		default:
+			s.userError(w, r, err)
+		}
+		return
+	}
+	status, body := http.StatusOK, map[string]string{"redirect": next}
+	var in inputError
+	switch {
+	case err == nil:
+	case errors.Is(err, errForbidden):
+		status, body = http.StatusForbidden, map[string]string{"error": "The request could not be verified. Reload the page and try again."}
+	case errors.Is(err, store.ErrNotFound):
+		status, body = http.StatusNotFound, map[string]string{"error": "Not found."}
+	case errors.As(err, &in):
+		status, body = http.StatusBadRequest, map[string]string{"error": in.Error()}
+	default:
+		s.log.Error("upload failed", "path", r.URL.Path, "err", err)
+		status, body = http.StatusInternalServerError, map[string]string{"error": "Internal error, see the app logs."}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(body)
+}
+
+// verifyUpload compares a checksum from the user with the stored one, for
+// files that arrived through the File Manager.
+func (s *Server) verifyUpload(w http.ResponseWriter, r *http.Request) {
+	up, role, err := s.authorizeUpload(r)
+	if err != nil {
+		s.userError(w, r, err)
+		return
+	}
+	want, err := uploads.NormalizeSHA256(r.PostForm.Get("sha256"))
+	if err == nil && want == "" {
+		err = errors.New("enter the SHA-256 checksum of your copy of the file")
+	}
+	if err != nil {
+		s.userError(w, r, badInput(err.Error()+"."))
+		return
+	}
+	if up.SHA256 == "" {
+		s.userError(w, r, badInput("The checksum of this file is still being calculated. Try again in a moment."))
+		return
+	}
+	if want != up.SHA256 {
+		s.audit(r, "upload.verify", role.Name, fmt.Sprintf("file=%s result=mismatch", up.FileName))
+		s.userError(w, r, badInput(fmt.Sprintf("Checksum mismatch: the file on the server has %s, yours is %s. Upload it again.", up.SHA256, want)))
+		return
+	}
+	if err := s.store.SetUploadVerified(r.Context(), up.ID, "user"); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	if err := s.store.AddUpload(r.Context(), role.Name, name, size, sess.Username); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.audit(r, "upload.create", role.Name, fmt.Sprintf("file=%s size=%d", name, size))
+	s.audit(r, "upload.verify", role.Name, fmt.Sprintf("file=%s result=match", up.FileName))
 	http.Redirect(w, r, "/roles/"+role.Name+"/uploads", http.StatusSeeOther)
+}
+
+// HashLoop calculates checksums of files that were copied in with the File
+// Manager, one at a time.
+func (s *Server) HashLoop(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		pending, err := s.store.PendingHashes(ctx)
+		if err != nil && ctx.Err() == nil {
+			s.log.Error("listing uploads to hash", "err", err)
+		}
+		for _, up := range pending {
+			if ctx.Err() != nil {
+				return
+			}
+			s.hashUpload(ctx, up)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		case <-s.hashWake:
+		}
+	}
+}
+
+func (s *Server) hashUpload(ctx context.Context, up store.Upload) {
+	path, err := uploads.Path(s.cfg.UploadDir, up.RoleName, up.FileName)
+	if err != nil {
+		return
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	sum, err := uploads.HashFile(path)
+	if err != nil {
+		s.log.Error("hashing upload", "file", up.FileName, "err", err)
+		return
+	}
+	// SetUploadHash only applies when size and mtime still match the scan
+	if err := s.store.SetUploadHash(ctx, up.ID, store.FileState{Size: before.Size(), MTime: before.ModTime()}, sum); err != nil {
+		s.log.Error("storing upload checksum", "file", up.FileName, "err", err)
+	}
+}
+
+func (s *Server) wakeHasher() {
+	select {
+	case s.hashWake <- struct{}{}:
+	default:
+	}
 }
 
 // placeUpload moves the finished upload to a free name, never over an existing file.

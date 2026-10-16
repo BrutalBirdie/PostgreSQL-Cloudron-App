@@ -5,6 +5,8 @@ package uploads
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -117,4 +119,34 @@ func looksLikeSQL(head []byte) bool {
 		}
 	}
 	return false
+}
+
+// HashFile returns the hex SHA-256 of a file.
+func HashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// NormalizeSHA256 accepts the output of sha256sum ("<hash>  <file>") and
+// PowerShell's Get-FileHash (upper case) and returns the lower case hash.
+func NormalizeSHA256(s string) (string, error) {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	h := strings.ToLower(fields[0])
+	if !sha256Pattern.MatchString(h) {
+		return "", errors.New("the SHA-256 checksum must be 64 hexadecimal characters")
+	}
+	return h, nil
 }

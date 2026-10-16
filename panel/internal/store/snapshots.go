@@ -253,7 +253,7 @@ SELECT to_regclass('public.schedules') IS NOT NULL
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'snapshots' AND column_name = 'kind')
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'scheduled')
    AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'jobs' AND column_name = 'strict')
-   AND to_regclass('public.uploads') IS NOT NULL`).Scan(&ready)
+   AND EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'uploads' AND column_name = 'mtime')`).Scan(&ready)
 	if err == nil && !ready {
 		err = errors.New("snapshot tables are not migrated yet")
 	}

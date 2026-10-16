@@ -232,6 +232,16 @@ func (w *Worker) importUpload(ctx context.Context, db *store.Database, uploadID 
 	if err != nil {
 		return err
 	}
+	if up.SHA256 == "" {
+		return errors.New("the checksum of the file has not been calculated yet, try again in a moment")
+	}
+	sum, err := uploads.HashFile(file)
+	if err != nil {
+		return err
+	}
+	if sum != up.SHA256 {
+		return fmt.Errorf("the file changed since it was uploaded (SHA-256 %s, expected %s), upload it again", sum, up.SHA256)
+	}
 	if _, err := uploads.Format(file); err != nil {
 		return err
 	}

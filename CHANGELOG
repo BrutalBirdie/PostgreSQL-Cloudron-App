@@ -37,3 +37,6 @@
 * Upload dump files in the panel or copy them with the File Manager to /app/data/uploads/<role>/
 * Uploads are deleted after PG_UPLOAD_RETENTION_DAYS (default 8) unless marked to keep
 * Plain SQL files are refused for server side import, psql would run meta-commands from the file
+* SHA-256 checks for uploads: the browser hashes the file before uploading, the server hashes it while writing and discards it on a mismatch
+* Optional checksum from where the dump was made, also for files copied with the File Manager
+* The worker checks the SHA-256 again before importing and refuses files that changed

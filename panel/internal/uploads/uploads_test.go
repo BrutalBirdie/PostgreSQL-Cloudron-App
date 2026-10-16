@@ -83,3 +83,30 @@ func TestScanAndPath(t *testing.T) {
 		t.Error("role traversal accepted")
 	}
 }
+
+func TestNormalizeSHA256(t *testing.T) {
+	const h = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	for _, in := range []string{h, "  " + h + "  ", h + "  prod.dump", "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"} {
+		got, err := NormalizeSHA256(in)
+		if err != nil || got != h {
+			t.Errorf("%q: got %q %v", in, got, err)
+		}
+	}
+	if got, err := NormalizeSHA256("  "); got != "" || err != nil {
+		t.Errorf("empty input: %q %v", got, err)
+	}
+	for _, bad := range []string{"abc", h + "0", "g" + h[1:]} {
+		if _, err := NormalizeSHA256(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestHashFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "empty")
+	os.WriteFile(p, nil, 0o600)
+	got, err := HashFile(p)
+	if err != nil || got != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
+		t.Fatalf("got %q %v", got, err)
+	}
+}
