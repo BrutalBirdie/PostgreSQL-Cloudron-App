@@ -1,3 +1,8 @@
+[1.2.0]
+* Email to the role owners when a snapshot, restore or import fails, admins can add addresses that get every failure
+* Mail is sent over STARTTLS with the Cloudron mail server certificate verified
+* Requires Cloudron 10.0.1 or newer
+
 [1.1.0]
 * Database sizes on My databases, a usage card on each database page with size, connections and snapshot totals
 * Admin page shows total database and snapshot size, used space of the data volume and per-database usage
