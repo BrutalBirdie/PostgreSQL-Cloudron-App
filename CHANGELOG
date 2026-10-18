@@ -1,3 +1,6 @@
+[1.0.1]
+* Docker image is published on the GitHub Container Registry
+
 [1.0.0]
 * Initial version with PostgreSQL 18.6
 * Remote access over TLS 1.3 with SCRAM-SHA-256, blocked until a network is added to the allowlist
