@@ -39,7 +39,7 @@ jobs:
         if: github.ref_type == 'tag'
         run: |
           version="${GITHUB_REF_NAME}"
-          awk -v entry="[${version}]" '$0 == entry { found=1; next } /^\[/ { found=0 } found' CHANGELOG > changelog.md
+          awk -v entry="[${version}]" '$0 == entry { found=1; next } /^\[/ { found=0 } found && NF' CHANGELOG > changelog.md
           if [[ ! -s changelog.md ]]; then
               echo "no CHANGELOG entry for ${version}"
               exit 1
@@ -96,12 +96,6 @@ jobs:
         run: |
           {
               cat changelog.md
-              echo
-              echo "## Install"
-              echo
-              echo "Add this URL under Community apps in the Cloudron dashboard:"
-              echo
-              echo "https://github.com/${GITHUB_REPOSITORY}/blob/master/CloudronVersions.json"
               echo
               echo "Docker image: \`${IMAGE}:${GITHUB_REF_NAME}\`"
           } > release-notes.md
