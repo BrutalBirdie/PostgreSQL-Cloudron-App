@@ -145,6 +145,26 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`)
 	return err
 }
 
+// Setting returns a stored setting, "" when it is not set.
+func (s *Store) Setting(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&v)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+// SetSetting stores a setting, an empty value removes it.
+func (s *Store) SetSetting(ctx context.Context, key, value string) error {
+	if value == "" {
+		_, err := s.pool.Exec(ctx, `DELETE FROM settings WHERE key = $1`, key)
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, key, value)
+	return err
+}
+
 // TakeAccessSyncRequest reports and clears a pending request.
 func (s *Store) TakeAccessSyncRequest(ctx context.Context) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM settings WHERE key = 'access_sync_requested'`)

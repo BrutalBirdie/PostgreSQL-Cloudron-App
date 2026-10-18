@@ -22,6 +22,7 @@ var ErrNotConfigured = errors.New("the SCIM addon is not configured")
 type User struct {
 	Username    string
 	DisplayName string
+	Email       string // primary address, "" when the user has none
 	GroupIDs    []string
 	GroupNames  []string
 }
@@ -66,7 +67,11 @@ type scimUser struct {
 	UserName    string `json:"userName"`
 	DisplayName string `json:"displayName"`
 	Active      bool   `json:"active"`
-	Groups      []struct {
+	Emails      []struct {
+		Value   string `json:"value"`
+		Primary bool   `json:"primary"`
+	} `json:"emails"`
+	Groups []struct {
 		Value   string `json:"value"`
 		Display string `json:"display"`
 	} `json:"groups"`
@@ -84,6 +89,11 @@ type listResponse[T any] struct {
 
 func (u scimUser) toUser() User {
 	out := User{Username: u.UserName, DisplayName: u.DisplayName}
+	for _, e := range u.Emails {
+		if out.Email == "" || e.Primary {
+			out.Email = e.Value
+		}
+	}
 	for _, g := range u.Groups {
 		out.GroupIDs = append(out.GroupIDs, g.Value)
 		out.GroupNames = append(out.GroupNames, g.Display)

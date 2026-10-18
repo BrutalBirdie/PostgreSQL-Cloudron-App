@@ -24,6 +24,22 @@
   </form>
 </section>
 
+<section class="card" id="notifications">
+  <h2>Failure notifications</h2>
+  {{if .Data.MailReady}}
+  <p>When a snapshot, restore or import fails, the owners of the database's role get an email. These addresses also get every failure.</p>
+  {{if .Data.TestSent}}<p><strong>Test mail sent.</strong></p>{{end}}
+  <form method="post" action="/admin/notifications" class="inline">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="text" name="notify_to" value="{{.Data.NotifyTo}}" placeholder="dba@example.com, ops@example.com" autocomplete="off" aria-label="Addresses for failure notifications">
+    <button type="submit" name="action" value="save">Save</button>
+    <button type="submit" name="action" value="test" class="secondary">Send test mail</button>
+  </form>
+  {{else}}
+  <p class="muted">Outgoing email is not available to this app, failure notifications are off.</p>
+  {{end}}
+</section>
+
 <section class="card">
   <h2>Create role</h2>
   <form method="post" action="/admin/roles" class="grid">

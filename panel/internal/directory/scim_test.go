@@ -53,14 +53,15 @@ func mockSCIM(t *testing.T, users []map[string]any, groups []map[string]any) (*h
 
 func TestLookupAndCache(t *testing.T) {
 	srv, calls, down := mockSCIM(t, []map[string]any{
-		{"userName": "carol", "active": true, "groups": []map[string]any{{"value": "g1", "display": "dbteam"}}},
+		{"userName": "carol", "active": true, "groups": []map[string]any{{"value": "g1", "display": "dbteam"}},
+			"emails": []map[string]any{{"value": "old@example.test"}, {"value": "carol@example.test", "primary": true}}},
 		{"userName": "gone", "active": false},
 	}, nil)
 	c := New(srv.URL, "tok", time.Hour)
 	ctx := context.Background()
 
 	u, err := c.Lookup(ctx, "carol")
-	if err != nil || u == nil || u.GroupIDs[0] != "g1" || u.GroupNames[0] != "dbteam" {
+	if err != nil || u == nil || u.GroupIDs[0] != "g1" || u.GroupNames[0] != "dbteam" || u.Email != "carol@example.test" {
 		t.Fatalf("carol: %+v %v", u, err)
 	}
 	before := calls.Load()

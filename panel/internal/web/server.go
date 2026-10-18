@@ -22,6 +22,7 @@ import (
 	"pgpanel/internal/access"
 	"pgpanel/internal/directory"
 	"pgpanel/internal/names"
+	"pgpanel/internal/notify"
 	"pgpanel/internal/store"
 )
 
@@ -53,6 +54,7 @@ type Config struct {
 	UploadKeep    time.Duration // uploads not marked keep are deleted after this
 	PGBinDir      string
 	MaxSnapshots  int
+	Mailer        *notify.Mailer // nil without the sendmail addon
 }
 
 type Server struct {
@@ -114,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /admin", s.requireAdmin(s.admin))
 	mux.Handle("GET /admin/audit", s.requireAdmin(s.auditLog))
 	mux.Handle("POST /admin/allowlist", s.requireAdmin(s.saveAllowlist))
+	mux.Handle("POST /admin/notifications", s.requireAdmin(s.saveNotifications))
 	mux.Handle("POST /admin/roles", s.requireAdmin(s.createRole))
 	mux.Handle("GET /admin/principals", s.requireAdmin(s.principals))
 	mux.Handle("GET /admin/roles/{name}", s.requireAdmin(s.rolePage))

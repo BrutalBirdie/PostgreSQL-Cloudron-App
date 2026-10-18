@@ -139,6 +139,22 @@ func (s *Store) FinishJob(ctx context.Context, id int64, jobErr error) error {
 	return err
 }
 
+// UnnotifiedFailures lists failed jobs nobody was told about yet. Failures
+// older than a day are dropped, a mail that late helps nobody.
+func (s *Store) UnnotifiedFailures(ctx context.Context) ([]Job, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, kind, database, snapshot_id, upload_id, strict, safety_snapshot, progress, progress_step, started_at, requested_by, status, error, created_at, finished_at, scheduled
+FROM jobs WHERE status = 'failed' AND NOT notified AND finished_at > now() - interval '1 day' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanJob)
+}
+
+func (s *Store) MarkNotified(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE jobs SET notified = true WHERE id = $1`, id)
+	return err
+}
+
 // FailInterruptedJobs is called by the worker on start, a running job cannot survive a restart.
 func (s *Store) FailInterruptedJobs(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, `UPDATE jobs SET status = 'failed', error = 'interrupted by an app restart', finished_at = now() WHERE status = 'running'`)

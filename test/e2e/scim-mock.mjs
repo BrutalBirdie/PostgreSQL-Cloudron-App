@@ -32,6 +32,7 @@ http.createServer((req, res) => {
             userName: u.userName,
             displayName: u.displayName,
             active: true,
+            emails: [{ value: u.userName + '@example.test', primary: true }],
             groups: u.groups.map((id) => ({ value: id, display: data.groups.find((g) => g.id === id).displayName })),
         }));
     } else if (url.pathname === '/v2/Groups') {

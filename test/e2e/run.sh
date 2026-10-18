@@ -13,6 +13,7 @@ readonly net=pge2e
 readonly app=pge2e-app
 readonly mock=pge2e-mock
 readonly scim=pge2e-scim
+readonly smtp=pge2e-smtp
 readonly work=$(mktemp -d)
 failures=0
 
@@ -30,7 +31,7 @@ cleanup() {
     fi
 }
 cleanup_containers() {
-    docker rm -f "${app}" "${mock}" "${scim}" >/dev/null 2>&1 || true
+    docker rm -f "${app}" "${mock}" "${scim}" "${smtp}" >/dev/null 2>&1 || true
     docker volume rm pge2e-data pge2e-pg >/dev/null 2>&1 || true
     docker network rm "${net}" >/dev/null 2>&1 || true
 }
@@ -73,6 +74,8 @@ app_run() {
         -e CLOUDRON_APP_DOMAIN=pg.test -e CLOUDRON_APP_ORIGIN=http://localhost:8000 -e POSTGRES_PORT=5432 \
         -e CLOUDRON_OIDC_ISSUER="http://${mock}:8080/default" -e CLOUDRON_OIDC_CLIENT_ID=pgpanel -e CLOUDRON_OIDC_CLIENT_SECRET=secret \
         -e CLOUDRON_SCIM_ORIGIN="http://${scim}:8080" -e CLOUDRON_SCIM_TOKEN=scimtoken -e PANEL_SCIM_CACHE=1s -e PANEL_ACCESS_SYNC=3s \
+        -e CLOUDRON_MAIL_SMTP_SERVER=mail.test -e CLOUDRON_MAIL_STARTTLS_PORT=2587 -e CLOUDRON_MAIL_SMTP_USERNAME=app -e CLOUDRON_MAIL_SMTP_PASSWORD=mailpass \
+        -e CLOUDRON_MAIL_FROM=pg.app@pg.test -e PANEL_NOTIFY_INTERVAL=2s -e SSL_CERT_FILE=/etc/certs/mail_cert.pem \
         "${img}" >/dev/null
 }
 
@@ -83,6 +86,8 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "${PWD}:/e2e" -w /e2e mcr
 mkdir -p "${work}/certs"
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "${work}/certs/tls_key.pem" -out "${work}/certs/tls_cert.pem" -days 2 \
     -subj "/CN=pg.test" -addext "subjectAltName=DNS:pg.test" 2>/dev/null
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "${work}/certs/mail_key.pem" -out "${work}/certs/mail_cert.pem" -days 2 \
+    -subj "/CN=mail.test" -addext "subjectAltName=DNS:mail.test" 2>/dev/null
 chmod 0644 "${work}/certs/"*
 chmod 0777 "${work}"
 
@@ -104,6 +109,22 @@ EOF
 scim_users '["g-team"]'
 docker run -d --name "${scim}" --network "${net}" -e SCIM_TOKEN=scimtoken -v "${PWD}:/e2e:ro" -v "${work}:/work:ro" -w /e2e \
     mcr.microsoft.com/playwright:v1.63.0-noble node scim-mock.mjs >/dev/null
+docker run -d --name "${smtp}" --network "${net}" --network-alias mail.test -u "$(id -u):$(id -g)" -v "${PWD}:/e2e:ro" -v "${work}:/work" -w /e2e \
+    mcr.microsoft.com/playwright:v1.63.0-noble node smtp-mock.mjs >/dev/null
+
+mails() { # mails <recipient> <subject regex>: number of matching messages
+    grep -lE "^Subject: $2" "${work}"/mail/*-"$1".eml 2>/dev/null | wc -l
+}
+mail_text() { # mail_text <recipient>: all messages with quoted-printable soft line breaks removed
+    cat "${work}"/mail/*-"$1".eml 2>/dev/null | sed -z 's/=\n//g'
+}
+wait_mail() { # wait_mail <recipient> <regex>
+    for _ in $(seq 1 30); do
+        grep -qE "$2" <<<"$(mail_text "$1")" && return 0
+        sleep 1
+    done
+    return 1
+}
 
 echo "==> Fresh install"
 app_run
@@ -113,6 +134,7 @@ expect "env.sh created on first start" "PG_MAX_SNAPSHOTS=7" "$(docker exec "${ap
 expect "no remote access before allowlist" "rejects connection" "$(pg x e2e_bob e2e_bob 'select 1')"
 
 browser admin
+expect "test mail delivered" "^1$" "$(mails dba@example.test 'PostgreSQL: test mail')"
 browser bobLogin
 browser eveLogin
 bob_pw=$(yq -p json -oy '.bobPassword' "${work}/state.json")
@@ -255,6 +277,18 @@ docker exec "${app}" gosu postgres pg_dump -h /var/lib/postgresql/run --format=c
 chmod a+r "${work}/files/ext.dump"
 superuser "drop database e2e_extsrc" >/dev/null
 browser failedImport
+failed_subject='PostgreSQL: import of e2e_bob failed'
+wait_mail bob@example.test 'create extension "file_fdw"' && pass "owner mailed the error of the failed import" || fail "owner mailed the error of the failed import" "$(mail_text bob@example.test | tail -20)"
+wait_mail dba@example.test 'create extension "file_fdw"' && pass "admin address mailed the error of the failed import" || fail "admin address mailed the error of the failed import" "$(ls "${work}/mail")"
+expect "failure mail subject" "^[1-9]" "$(mails bob@example.test "${failed_subject}")"
+expect "group owner mailed" "^[1-9]" "$(mails carol@example.test "${failed_subject}")"
+expect "non-owner not mailed" "^0$" "$(mails eve@example.test 'PostgreSQL: import')"
+for _ in $(seq 1 10); do
+    [[ "$(superuser "select count(*) from jobs where status = 'failed' and not notified" pgpanel)" == "0" ]] && break
+    sleep 1
+done
+expect "failed jobs marked notified" "^0$" "$(superuser "select count(*) from jobs where status = 'failed' and not notified" pgpanel)"
+failure_mails=$(ls "${work}/mail" | wc -l)
 expect "failed import left the data unchanged" "^from dump$" "$(pg "${new_pw}" e2e_bob.bob e2e_bob 'select v from imported_marker')"
 expect "failed import left no staging database" "^0$" "$(superuser "select count(*) from pg_database where datname like 'pgpanel\_%'")"
 expect "import loaded the dump" "^from dump$" "$(pg "${new_pw}" e2e_bob.bob e2e_bob 'select v from imported_marker')"
@@ -314,6 +348,8 @@ sleep 3
 expect "row of a missing snapshot file removed" "^0$" "$(superuser "select count(*) from snapshots where file = '${gone_file}'" pgpanel)"
 expect "snapshot file without row removed" "^no$" "$(docker exec "${app}" bash -c 'test -e /var/lib/postgresql/snapshots/e2e_bob/orphan.dump && echo yes || echo no')"
 browser afterRestore
+
+expect "no failure mail repeated after restarts" "^${failure_mails}$" "$(ls "${work}/mail" | wc -l)"
 
 echo "==> Logs"
 expect "no panel or worker errors" "^$" "$(docker logs "${app}" 2>&1 | grep '"level":"ERROR"' | grep -v 'the file changed since it was uploaded\|file_fdw' || true)"

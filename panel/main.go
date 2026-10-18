@@ -17,6 +17,7 @@ import (
 	"pgpanel/internal/access"
 	"pgpanel/internal/directory"
 	"pgpanel/internal/hba"
+	"pgpanel/internal/notify"
 	"pgpanel/internal/store"
 	"pgpanel/internal/web"
 	"pgpanel/internal/worker"
@@ -45,10 +46,12 @@ func scimClient() *directory.Client {
 	return directory.New(os.Getenv("CLOUDRON_SCIM_ORIGIN"), os.Getenv("CLOUDRON_SCIM_TOKEN"), ttl)
 }
 
-func accessSyncInterval() time.Duration {
-	d, err := time.ParseDuration(os.Getenv("PANEL_ACCESS_SYNC"))
+func accessSyncInterval() time.Duration { return durationEnv("PANEL_ACCESS_SYNC", time.Minute) }
+
+func durationEnv(key string, def time.Duration) time.Duration {
+	d, err := time.ParseDuration(os.Getenv(key))
 	if err != nil || d <= 0 {
-		return time.Minute
+		return def
 	}
 	return d
 }
@@ -91,8 +94,9 @@ func runWorker(log *slog.Logger) error {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	w := worker.New(worker.Config{Directory: scimClient(), Admins: admins(), SnapshotDir: snapshotDir, UploadDir: uploadDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots()}, st, log)
+	w := worker.New(worker.Config{Directory: scimClient(), Admins: admins(), SnapshotDir: snapshotDir, UploadDir: uploadDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots(), Mailer: notify.FromEnv(), Origin: os.Getenv("CLOUDRON_APP_ORIGIN")}, st, log)
 	go w.AccessSync(ctx, accessSyncInterval())
+	go w.NotifyFailures(ctx, durationEnv("PANEL_NOTIFY_INTERVAL", 30*time.Second))
 	return w.Run(ctx)
 }
 
@@ -193,6 +197,7 @@ func serve(log *slog.Logger) error {
 		UploadKeep:    uploadRetention(),
 		PGBinDir:      pgBinDir,
 		MaxSnapshots:  maxSnapshots(),
+		Mailer:        notify.FromEnv(),
 	}, st, log)
 	if err != nil {
 		return err

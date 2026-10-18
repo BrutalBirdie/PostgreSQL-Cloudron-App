@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"pgpanel/internal/hba"
+	"pgpanel/internal/notify"
 	"pgpanel/internal/store"
 	"pgpanel/internal/worker"
 )
@@ -51,6 +52,9 @@ type adminData struct {
 	Stats     map[string]store.DatabaseStats
 	Total     store.DatabaseStats
 	Disk      *diskUsage // nil when the volume cannot be read
+	NotifyTo  string
+	MailReady bool
+	TestSent  bool
 }
 
 type diskUsage struct {
@@ -102,7 +106,45 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Warn("reading disk usage", "err", err)
 	}
-	s.render(w, r, http.StatusOK, "admin", adminData{Roles: roles, Databases: dbs, Allowlist: b.String(), Stats: stats, Total: total, Disk: disk})
+	notifyTo, err := s.store.Setting(ctx, worker.SettingNotifyTo)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.render(w, r, http.StatusOK, "admin", adminData{Roles: roles, Databases: dbs, Allowlist: b.String(), Stats: stats, Total: total, Disk: disk,
+		NotifyTo: notifyTo, MailReady: s.cfg.Mailer != nil, TestSent: r.URL.Query().Get("mail") == "sent"})
+}
+
+// saveNotifications stores the admin addresses for failure mails, or sends a
+// test mail to the addresses in the form.
+func (s *Server) saveNotifications(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	list, err := notify.ParseList(r.PostForm.Get("notify_to"))
+	if err != nil {
+		s.userError(w, r, badInput(err.Error()))
+		return
+	}
+	value := strings.Join(list, ", ")
+	if r.PostForm.Get("action") == "test" {
+		if len(list) == 0 {
+			s.userError(w, r, badInput("Enter an address to send the test mail to."))
+			return
+		}
+		if _, err := s.cfg.Mailer.Send(ctx, list, "PostgreSQL: test mail", "This is a test mail from the PostgreSQL panel at "+s.cfg.Origin+".\n"); err != nil {
+			s.log.Error("sending test mail", "err", err)
+			s.userError(w, r, badInput("The test mail could not be sent: "+err.Error()))
+			return
+		}
+		s.audit(r, "notify.test", "mail", value)
+		http.Redirect(w, r, "/admin?mail=sent#notifications", http.StatusSeeOther)
+		return
+	}
+	if err := s.store.SetSetting(ctx, worker.SettingNotifyTo, value); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.audit(r, "notify.update", "mail", value)
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 func (s *Server) auditLog(w http.ResponseWriter, r *http.Request) {

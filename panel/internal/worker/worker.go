@@ -21,6 +21,7 @@ import (
 	"pgpanel/internal/access"
 	"pgpanel/internal/directory"
 	"pgpanel/internal/names"
+	"pgpanel/internal/notify"
 	"pgpanel/internal/schedule"
 	"pgpanel/internal/store"
 	"pgpanel/internal/uploads"
@@ -34,6 +35,8 @@ type Config struct {
 	SocketDir    string
 	BinDir       string
 	MaxSnapshots int
+	Mailer       *notify.Mailer // nil without the sendmail addon
+	Origin       string         // https://fqdn of the app, for links in mails
 }
 
 type Worker struct {

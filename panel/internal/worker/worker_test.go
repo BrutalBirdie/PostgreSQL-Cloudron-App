@@ -3,8 +3,12 @@ package worker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
+
+	"pgpanel/internal/store"
 )
 
 func TestResolve(t *testing.T) {
@@ -45,5 +49,18 @@ func TestEnsureSharedDir(t *testing.T) {
 	plain := t.TempDir()
 	if err := ensureSharedDir(filepath.Join(plain, "db")); err == nil {
 		t.Fatal("a parent without setgid must be reported")
+	}
+}
+
+func TestFailureMail(t *testing.T) {
+	started := time.Date(2026, 10, 18, 13, 0, 0, 0, time.UTC)
+	subject, body := failureMail(store.Job{Kind: "snapshot", Database: "app_one", Scheduled: true, RequestedBy: "schedule", Error: "pg_dump: disk full", StartedAt: &started}, "https://pg.example/")
+	if subject != "PostgreSQL: scheduled snapshot of app_one failed" {
+		t.Errorf("subject %q", subject)
+	}
+	for _, want := range []string{"2026-10-18 13:00 UTC", "pg_dump: disk full", "https://pg.example/databases/app_one"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body misses %q:\n%s", want, body)
+		}
 	}
 }

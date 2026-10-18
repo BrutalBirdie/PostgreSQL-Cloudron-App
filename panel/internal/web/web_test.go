@@ -32,7 +32,7 @@ func TestPagesRender(t *testing.T) {
 		"login":  nil,
 		"home":   homeData{Roles: []roleView{{Role: roles[0], Login: login}, {Role: roles[0]}}, Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20}}},
 		"role":   rolePageData{Role: roles[0], OwnersText: "user:ann, group:dbteam", Logins: []store.Login{*login}},
-		"admin":  adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}, {Name: "app_two", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n", Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20, Snapshots: 2}}, Disk: &diskUsage{Used: 1 << 30, Size: 4 << 30}},
+		"admin":  adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}, {Name: "app_two", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n", Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20, Snapshots: 2}}, Disk: &diskUsage{Used: 1 << 30, Size: 4 << 30}, NotifyTo: "dba@example.test", MailReady: true, TestSent: true},
 		"secret": secretData{Login: "app_one.ann", Role: "app_one", Database: "app_one", Password: "pw"},
 		"audit":  []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}},
 		"error":  nil,
@@ -61,6 +61,9 @@ func TestPagesRender(t *testing.T) {
 		body := rec.Body.String()
 		if !strings.Contains(body, "</html>") {
 			t.Errorf("%s: incomplete page: %s", page, body)
+		}
+		if page == "admin" && !strings.Contains(body, `value="dba@example.test"`) {
+			t.Errorf("admin: notification address missing")
 		}
 		if (page == "home" || page == "admin") && !strings.Contains(body, "7.0 MiB") {
 			t.Errorf("%s: database size missing", page)

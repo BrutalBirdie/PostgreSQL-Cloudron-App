@@ -98,4 +98,7 @@ CREATE TABLE IF NOT EXISTS uploads (
 CREATE TABLE IF NOT EXISTS settings (
     key text PRIMARY KEY,
     value text NOT NULL
-);`
+);
+-- jobs from before the column existed count as notified, new ones start unnotified
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS notified boolean NOT NULL DEFAULT true;
+ALTER TABLE jobs ALTER COLUMN notified SET DEFAULT false;`

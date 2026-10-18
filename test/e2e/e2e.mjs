@@ -80,6 +80,18 @@ const steps = {
         await page.waitForURL(BASE + '/admin');
         check('allowlist saved', (await page.inputValue('textarea[name=allowlist]')).includes(process.env.APP_IP + '/32'));
 
+        await page.fill('input[name=notify_to]', 'not an address');
+        await page.click('form[action="/admin/notifications"] button[value=save]');
+        check('invalid notification address rejected', (await page.content()).includes('is not a list of email addresses'));
+        await page.goto(BASE + '/admin');
+        await page.fill('input[name=notify_to]', 'DBA <dba@example.test>');
+        await page.click('form[action="/admin/notifications"] button[value=test]');
+        check('test mail reported as sent', (await page.content()).includes('Test mail sent.'));
+        await page.fill('input[name=notify_to]', 'dba@example.test');
+        await page.click('form[action="/admin/notifications"] button[value=save]');
+        await page.waitForURL(BASE + '/admin');
+        check('notification address saved', (await page.inputValue('input[name=notify_to]')) === 'dba@example.test');
+
         const form = page.locator('form[action="/admin/roles"]');
         await form.locator('input[name=name]').fill('e2e_bob');
         const search = form.locator('.principals input');
