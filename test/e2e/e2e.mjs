@@ -237,7 +237,7 @@ const steps = {
         await save();
     },
 
-    // screenshots for the manifest's mediaLinks, only run with SCREENSHOTS=1
+    // screenshots for the manifest's mediaLinks, only run with SCREENSHOTS=1 or ARTIFACTS
     async screenshots() {
         fs.mkdirSync('/work/shots', { recursive: true });
         for (const [user, url, name] of [['bob', '/', 'databases'], ['bob', '/databases/e2e_bob', 'database'], ['ann', '/admin', 'admin']]) {
@@ -545,6 +545,10 @@ try {
         fs.writeFileSync(`/work/fail-${step}.html`, `<!-- ${lastPage.url()} -->\n` + (await lastPage.content().catch(() => '')));
         console.log(`       page saved to fail-${step}.html (${lastPage.url()})`);
     }
+}
+if (lastPage) {
+    fs.mkdirSync('/work/steps', { recursive: true });
+    await lastPage.screenshot({ path: `/work/steps/${step}.png`, fullPage: true }).catch(() => {});
 }
 fs.writeFileSync(STATE, JSON.stringify(state, null, 1));
 await browser.close();

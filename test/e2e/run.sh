@@ -2,6 +2,7 @@
 # End-to-end test: fresh install, real browser, mock OIDC, PostgreSQL over TLS,
 # backup and restore. Usage: test/e2e/run.sh   (needs Docker)
 # SCREENSHOTS=1 also writes the store screenshots to screenshots/
+# ARTIFACTS=<dir> keeps step screenshots, store screenshots, failed pages and the app log
 
 set -eu
 
@@ -16,6 +17,11 @@ readonly work=$(mktemp -d)
 failures=0
 
 cleanup() {
+    if [[ -n "${ARTIFACTS:-}" ]]; then
+        mkdir -p "${ARTIFACTS}"
+        docker logs "${app}" > "${ARTIFACTS}/app.log" 2>&1 || true
+        cp -R "${work}/steps" "${work}/shots" "${work}/"fail-*.html "${ARTIFACTS}/" 2>/dev/null || true
+    fi
     if [[ -n "${KEEP:-}" ]]; then
         echo "==> Kept containers and ${work}"
     else
@@ -185,8 +191,10 @@ expect "snapshots use zstd" "zstd" "$(docker exec "${app}" gosu postgres pg_rest
 expect "snapshots quote all identifiers" 'CREATE TABLE "public"\."t"' "$(docker exec "${app}" gosu postgres pg_restore -f - "${snap_file}" | grep 'CREATE TABLE')"
 expect "backups quote all identifiers" 'CREATE ROLE "e2e_bob"' "$(docker run --rm --network "container:${app}" -v pge2e-pg:/var/lib/postgresql "${img}" gosu postgres pg_dumpall -h /var/lib/postgresql/run --globals-only --quote-all-identifiers | grep 'CREATE ROLE "e2e_bob"')"
 
-if [[ "${SCREENSHOTS:-}" == "1" ]]; then
+if [[ "${SCREENSHOTS:-}" == "1" || -n "${ARTIFACTS:-}" ]]; then
     browser screenshots
+fi
+if [[ "${SCREENSHOTS:-}" == "1" ]]; then
     mkdir -p "${root}/screenshots"
     cp "${work}/shots/"*.png "${root}/screenshots/"
 fi

@@ -47,7 +47,16 @@ jobs:
           cat changelog.md
 
       - name: End-to-end test
+        env:
+          ARTIFACTS: ${{ runner.temp }}/e2e
         run: test/e2e/run.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e
+          path: ${{ runner.temp }}/e2e
+          if-no-files-found: ignore
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         if: github.ref_type == 'tag'
