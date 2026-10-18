@@ -1,3 +1,7 @@
+[1.1.0]
+* Database sizes on My databases, a usage card on each database page with size, connections and snapshot totals
+* Admin page shows total database and snapshot size, used space of the data volume and per-database usage
+
 [1.0.1]
 * Docker image is published on the GitHub Container Registry
 
