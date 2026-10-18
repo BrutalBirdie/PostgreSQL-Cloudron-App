@@ -138,13 +138,23 @@ const steps = {
     },
 
     async bobLogin() {
-        const { page, save } = await session('bob');
+        const { ctx, page, save } = await session('bob');
         await login(page, 'bob', []);
         check('bob has no login yet', (await page.content()).includes('Create my password'));
         await page.click('form[action="/roles/e2e_bob/password"] button');
         state.bobPassword = await secretFromPage(page);
         check('bob login password shown once', state.bobPassword.length === 32);
         check('connection URL uses the own login', (await page.content()).includes('postgresql://e2e_bob.bob@pg.test:5432/e2e_bob'));
+        await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE });
+        await page.getByRole('button', { name: 'Copy password' }).click();
+        check('password copied', (await page.evaluate(() => navigator.clipboard.readText())) === state.bobPassword);
+        await page.goto(BASE + '/');
+        const copyURL = page.getByRole('button', { name: 'Copy connection URL' }).first();
+        await copyURL.click();
+        check('connection URL copied', (await page.evaluate(() => navigator.clipboard.readText())) === 'postgresql://e2e_bob.bob@pg.test:5432/e2e_bob?sslmode=verify-full&sslrootcert=system');
+        check('copy button confirms', (await copyURL.getAttribute('title')) === 'Copied');
+        const [codeBox, buttonBox] = [await page.locator('.copyable code').first().boundingBox(), await copyURL.boundingBox()];
+        check('copy button right of the URL', buttonBox.x > codeBox.x + codeBox.width - 1 && Math.abs((buttonBox.y + buttonBox.height / 2) - (codeBox.y + codeBox.height / 2)) < codeBox.height);
         await save();
     },
 
@@ -549,6 +559,29 @@ const steps = {
         const row = page.locator('tbody tr', { hasText: 'manual' }).first();
         const [dl] = await Promise.all([page.waitForEvent('download'), row.getByRole('link', { name: 'Download .dump' }).click()]);
         check('download works after app restore', !(await dl.failure()) && fs.readFileSync(await dl.path()).subarray(0, 5).toString() === 'PGDMP');
+    },
+
+    async eveAppPassword() {
+        const { page, save } = await session('eve');
+        await login(page, 'eve', []);
+        await page.click('form[action="/roles/e2e_eve/password"] button[formaction="/roles/e2e_eve/apppw"]');
+        await page.waitForURL(BASE + '/');
+        const html = await page.content();
+        check('eve switched to an app password', html.includes('<code>e2e_eve.eve</code> signs in with a Cloudron app password'));
+        check('profile link shown', html.includes('/#/profile'));
+        check('switch button hidden once used', !(await page.locator('button[formaction="/roles/e2e_eve/apppw"]').count()));
+        await save();
+    },
+
+    async eveGeneratedAgain() {
+        const { page, save } = await session('eve');
+        await login(page, 'eve', []);
+        await page.getByRole('button', { name: 'Use a generated password instead' }).click();
+        state.evePassword = await secretFromPage(page);
+        check('eve gets a generated password again', state.evePassword.length === 32);
+        await page.goto(BASE + '/');
+        check('app password option offered again', (await page.locator('button[formaction="/roles/e2e_eve/apppw"]').count()) === 1);
+        await save();
     },
 };
 

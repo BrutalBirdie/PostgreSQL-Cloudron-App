@@ -1,0 +1,3 @@
+# Cloudron app passwords for PostgreSQL logins, see panel/internal/apppw
+auth     required  pam_exec.so expose_authtok quiet /app/code/panel pam-auth
+account  required  pam_permit.so

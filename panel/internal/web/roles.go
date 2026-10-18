@@ -103,6 +103,10 @@ func (s *Server) setMyPassword(w http.ResponseWriter, r *http.Request) {
 		s.userError(w, r, err)
 		return
 	}
+	if err := s.WriteAppPasswordMap(ctx); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	s.audit(r, "login.password", login, "role="+role.Name)
 	db := role.Name
 	if len(role.Databases) > 0 {
@@ -310,6 +314,9 @@ func (s *Server) revokeLogin(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.RevokeLogin(r.Context(), login); err != nil {
 		s.userError(w, r, err)
 		return
+	}
+	if err := s.WriteAppPasswordMap(r.Context()); err != nil {
+		s.log.Error("writing the app password map", "err", err)
 	}
 	s.audit(r, "login.revoke", login, "role="+name)
 	http.Redirect(w, r, "/admin/roles/"+name, http.StatusSeeOther)

@@ -30,6 +30,7 @@ COPY nginx/readonlyrootfs.conf /etc/nginx/conf.d/readonlyrootfs.conf
 COPY nginx/app.conf /etc/nginx/sites-enabled/app.conf
 
 COPY supervisor/* /etc/supervisor/conf.d/
+COPY pam/pgpanel /etc/pam.d/pgpanel
 RUN ln -sf /run/supervisord.log /var/log/supervisor/supervisord.log
 
 COPY --from=panel /out/panel /app/code/panel

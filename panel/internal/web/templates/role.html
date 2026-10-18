@@ -31,7 +31,7 @@
     <tr>
       <td><code>{{.LoginRole}}</code></td>
       <td>{{.Username}}</td>
-      <td>{{.RotatedAt.UTC.Format "2006-01-02 15:04"}}</td>
+      <td>{{if eq .Auth "apppw"}}<span class="tag">Cloudron app password</span> since {{end}}{{.RotatedAt.UTC.Format "2006-01-02 15:04"}}</td>
       <td>{{if .Revoked}}<span class="muted">being removed</span>{{else}}
         <form method="post" action="/admin/roles/{{$role.Name}}/logins/{{.LoginRole}}/revoke" class="inline">
           <input type="hidden" name="csrf" value="{{$csrf}}">

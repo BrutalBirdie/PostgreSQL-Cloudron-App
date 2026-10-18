@@ -116,11 +116,16 @@ DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pgpanel') THEN
         CREATE ROLE pgpanel LOGIN;
     END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'apppw') THEN
+        CREATE ROLE apppw NOLOGIN;
+    END IF;
 END $$;
 ALTER ROLE pgpanel LOGIN NOSUPERUSER CREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
 -- roles created by pgpanel are granted back to it with SET, needed for CREATE DATABASE ... OWNER
 ALTER ROLE pgpanel SET createrole_self_grant = 'set';
 GRANT tenants TO pgpanel WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+-- members of apppw sign in with a Cloudron app password, see pg_hba.conf
+GRANT apppw TO pgpanel WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 -- database sizes in the panel - https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADMIN-DBOBJECT
 GRANT pg_read_all_stats TO pgpanel;
 

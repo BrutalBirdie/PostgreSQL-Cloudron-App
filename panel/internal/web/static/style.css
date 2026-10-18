@@ -44,6 +44,10 @@ dd { margin: 0; }
 button.secondary, .button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .actions .button, .actions button { padding: 4px 10px; font-size: 0.9em; }
+.copyable { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.copyable code { min-width: 0; }
+button.copy { flex: none; display: inline-flex; padding: 4px; background: transparent; color: var(--muted); border: 1px solid var(--border); }
+button.copy:hover { color: var(--accent); }
 .danger-zone { border-color: var(--danger); }
 .danger-zone h2, .danger-zone h1 { color: var(--danger); }
 .danger-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }

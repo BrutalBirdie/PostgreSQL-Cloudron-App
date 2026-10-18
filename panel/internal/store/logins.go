@@ -14,10 +14,17 @@ import (
 	"pgpanel/internal/access"
 )
 
+// Login authentication methods, see role_logins.auth.
+const (
+	AuthPassword    = "password"
+	AuthAppPassword = "apppw"
+)
+
 type Login struct {
 	LoginRole string
 	RoleName  string
 	Username  string
+	Auth      string // AuthPassword or AuthAppPassword
 	Revoked   bool
 	CreatedAt time.Time
 	RotatedAt time.Time
@@ -38,7 +45,7 @@ func LoginName(role, username string) string {
 }
 
 func (s *Store) LoginOf(ctx context.Context, role, username string) (*Login, error) {
-	rows, err := s.pool.Query(ctx, `SELECT login_role, role_name, username, revoked, created_at, rotated_at FROM role_logins WHERE role_name = $1 AND username = $2`, role, username)
+	rows, err := s.pool.Query(ctx, `SELECT login_role, role_name, username, auth, revoked, created_at, rotated_at FROM role_logins WHERE role_name = $1 AND username = $2`, role, username)
 	if err != nil {
 		return nil, err
 	}
@@ -51,13 +58,13 @@ func (s *Store) LoginOf(ctx context.Context, role, username string) (*Login, err
 
 func scanLogin(r pgx.CollectableRow) (Login, error) {
 	var l Login
-	err := r.Scan(&l.LoginRole, &l.RoleName, &l.Username, &l.Revoked, &l.CreatedAt, &l.RotatedAt)
+	err := r.Scan(&l.LoginRole, &l.RoleName, &l.Username, &l.Auth, &l.Revoked, &l.CreatedAt, &l.RotatedAt)
 	return l, err
 }
 
 // ListLogins returns the logins of one role, or of all roles when role is "".
 func (s *Store) ListLogins(ctx context.Context, role string) ([]Login, error) {
-	rows, err := s.pool.Query(ctx, `SELECT login_role, role_name, username, revoked, created_at, rotated_at FROM role_logins
+	rows, err := s.pool.Query(ctx, `SELECT login_role, role_name, username, auth, revoked, created_at, rotated_at FROM role_logins
 WHERE $1 = '' OR role_name = $1 ORDER BY role_name, username`, role)
 	if err != nil {
 		return nil, err
@@ -68,7 +75,18 @@ WHERE $1 = '' OR role_name = $1 ORDER BY role_name, username`, role)
 // SetLoginPassword creates the user's login for a role or gives it a new
 // password. The login is a member of the shared role and switches to it on
 // connect (SET role), so everything it creates belongs to the shared role.
+// A login that used app passwords goes back to its SCRAM password.
 func (s *Store) SetLoginPassword(ctx context.Context, role, username, verifier string, connLimit int) (string, error) {
+	return s.setLoginAuth(ctx, role, username, AuthPassword, verifier, connLimit)
+}
+
+// UseAppPassword makes the user's login for a role authenticate with Cloudron
+// app passwords only. Its SCRAM password is removed.
+func (s *Store) UseAppPassword(ctx context.Context, role, username string, connLimit int) (string, error) {
+	return s.setLoginAuth(ctx, role, username, AuthAppPassword, "", connLimit)
+}
+
+func (s *Store) setLoginAuth(ctx context.Context, role, username, auth, verifier string, connLimit int) (string, error) {
 	login := LoginName(role, username)
 	existing, err := s.LoginOf(ctx, role, username)
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -77,33 +95,69 @@ func (s *Store) SetLoginPassword(ctx context.Context, role, username, verifier s
 	if existing != nil && existing.Revoked {
 		return "", errors.New("this login is being removed, try again in a minute")
 	}
+	password := "NULL"
+	if auth == AuthPassword {
+		password = literal(verifier)
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback(ctx)
 	if existing != nil {
-		if _, err := tx.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s PASSWORD %s`, ident(existing.LoginRole), literal(verifier))); err != nil {
+		login = existing.LoginRole
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`ALTER ROLE %s PASSWORD %s`, ident(login), password)); err != nil {
 			return "", err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE role_logins SET rotated_at = now() WHERE login_role = $1`, existing.LoginRole); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE role_logins SET auth = $2, rotated_at = now() WHERE login_role = $1`, login, auth); err != nil {
 			return "", err
 		}
-		return existing.LoginRole, tx.Commit(ctx)
+	} else {
+		for _, sql := range []string{
+			fmt.Sprintf(`CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT %d IN ROLE %s PASSWORD %s`,
+				ident(login), connLimit, ident(role), password),
+			fmt.Sprintf(`ALTER ROLE %s SET role = %s`, ident(login), literal(role)),
+		} {
+			if _, err := tx.Exec(ctx, sql); err != nil {
+				return "", err
+			}
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO role_logins (login_role, role_name, username, auth) VALUES ($1, $2, $3, $4)`, login, role, username, auth); err != nil {
+			return "", err
+		}
 	}
-	for _, sql := range []string{
-		fmt.Sprintf(`CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT %d IN ROLE %s PASSWORD %s`,
-			ident(login), connLimit, ident(role), literal(verifier)),
-		fmt.Sprintf(`ALTER ROLE %s SET role = %s`, ident(login), literal(role)),
-	} {
-		if _, err := tx.Exec(ctx, sql); err != nil {
+	// pg_hba.conf sends members of apppw to PAM, everyone else to SCRAM
+	grant := ""
+	switch {
+	case auth == AuthAppPassword:
+		grant = fmt.Sprintf(`GRANT apppw TO %s`, ident(login))
+	case existing != nil && existing.Auth == AuthAppPassword:
+		grant = fmt.Sprintf(`REVOKE apppw FROM %s`, ident(login))
+	}
+	if grant != "" {
+		if _, err := tx.Exec(ctx, grant); err != nil {
 			return "", err
 		}
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO role_logins (login_role, role_name, username) VALUES ($1, $2, $3)`, login, role, username); err != nil {
-		return "", err
 	}
 	return login, tx.Commit(ctx)
+}
+
+// AppPasswordLogins maps every login that uses app passwords to its Cloudron username.
+func (s *Store) AppPasswordLogins(ctx context.Context) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT login_role, username FROM role_logins WHERE auth = 'apppw' AND NOT revoked`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var login, username string
+		if err := rows.Scan(&login, &username); err != nil {
+			return nil, err
+		}
+		out[login] = username
+	}
+	return out, rows.Err()
 }
 
 // RevokeLogin stops new connections at once; the worker terminates sessions,

@@ -97,11 +97,15 @@ func Render(allow []netip.Prefix, allowLocalhost bool) string {
 	line("local    all      all               reject")
 	line("host     all      postgres,pgpanel  0.0.0.0/0  reject")
 	line("host     all      postgres,pgpanel  ::/0       reject")
+	// +apppw comes first: its logins are tenants too and have no SCRAM secret
 	if allowLocalhost {
+		line("host     all      +apppw            127.0.0.1/32  pam pamservice=pgpanel")
+		line("host     all      +apppw            ::1/128       pam pamservice=pgpanel")
 		line("host     all      +tenants          127.0.0.1/32  scram-sha-256")
 		line("host     all      +tenants          ::1/128       scram-sha-256")
 	}
 	for _, p := range allow {
+		line("hostssl  all      +apppw            %s  pam pamservice=pgpanel", p)
 		line("hostssl  all      +tenants          %s  scram-sha-256", p)
 	}
 	line("host     all      all               0.0.0.0/0  reject")

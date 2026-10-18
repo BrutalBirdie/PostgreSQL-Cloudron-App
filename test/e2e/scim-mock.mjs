@@ -46,3 +46,22 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/scim+json' });
     res.end(JSON.stringify({ totalResults: list.length, startIndex: start, itemsPerPage: count, Resources: list.slice(start - 1, start - 1 + count) }));
 }).listen(8080);
+
+// app bridge of the box: POST /verify-app-password, app passwords come from /work/scim.json
+http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+        if (req.method !== 'POST' || req.url !== '/verify-app-password') {
+            res.writeHead(404).end();
+            return;
+        }
+        const { identifier, password } = JSON.parse(body || '{}');
+        const data = JSON.parse(fs.readFileSync('/work/scim.json', 'utf8'));
+        if (!(data.appPasswords?.[identifier] ?? []).includes(password)) {
+            res.writeHead(401, { 'Content-Type': 'application/json' }).end('{"message":"Password is not valid"}');
+            return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ id: 'uid-' + identifier, username: identifier }));
+    });
+}).listen(3006);

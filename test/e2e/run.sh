@@ -75,6 +75,7 @@ app_run() {
         -e CLOUDRON_OIDC_ISSUER="http://${mock}:8080/default" -e CLOUDRON_OIDC_CLIENT_ID=pgpanel -e CLOUDRON_OIDC_CLIENT_SECRET=secret \
         -e CLOUDRON_SCIM_ORIGIN="http://${scim}:8080" -e CLOUDRON_SCIM_TOKEN=scimtoken -e PANEL_SCIM_CACHE=1s -e PANEL_ACCESS_SYNC=3s \
         -e CLOUDRON_MAIL_SMTP_SERVER=mail.test -e CLOUDRON_MAIL_STARTTLS_PORT=2587 -e CLOUDRON_MAIL_SMTP_USERNAME=app -e CLOUDRON_MAIL_SMTP_PASSWORD=mailpass \
+        -e CLOUDRON_APP_BRIDGE_ORIGIN="http://${scim}:3006" -e CLOUDRON_WEBADMIN_ORIGIN=https://my.pg.test \
         -e CLOUDRON_MAIL_FROM=pg.app@pg.test -e PANEL_NOTIFY_INTERVAL=2s -e SSL_CERT_FILE=/etc/certs/mail_cert.pem \
         "${img}" >/dev/null
 }
@@ -93,9 +94,10 @@ chmod 0777 "${work}"
 
 docker network create "${net}" >/dev/null
 docker run -d --name "${mock}" --network "${net}" -e JSON_CONFIG='{"interactiveLogin":true}' ghcr.io/navikt/mock-oauth2-server:6.0.3 >/dev/null
-scim_users() { # scim_users <carol's groups as JSON array>
+scim_users() { # scim_users <carol's groups as JSON array> [eve's app passwords as JSON array]
     cat > "${work}/scim.json" <<EOF
 {
+  "appPasswords": {"eve": ${2:-[]}},
   "groups": [{"id": "g-admins", "displayName": "postgres-admins"}, {"id": "g-team", "displayName": "dbteam"}, {"id": "g-ops", "displayName": "ops"}],
   "users": [
     {"userName": "ann", "displayName": "Ann Admin", "groups": ["g-admins"]},
@@ -298,12 +300,33 @@ upload_perms=$(docker exec "${app}" find /app/data/uploads -mindepth 1 -printf '
 expect "upload directories setgid, cloudron:postgres" "^$" "$(grep '^d' <<<"${upload_perms}" | grep -v '^d 2750 cloudron:postgres ' || true)"
 expect "panel uploads 0640 cloudron:postgres" "f 640 cloudron:postgres /app/data/uploads/e2e_bob/import_me.dump" "${upload_perms}"
 
+echo "==> Cloudron app passwords"
+readonly eve_app_pw='eve-app-password-1'
+scim_users '["g-team"]' "[\"${eve_app_pw}\"]"
+browser eveAppPassword
+expect "eve connects with her app password" "^1$" "$(pg "${eve_app_pw}" e2e_eve.eve e2e_eve 'select 1')"
+expect "app password login used TLS 1.3" "protocol=TLSv1.3" "$(docker logs "${app}" 2>&1 | grep 'connection authorized: user=e2e_eve.eve' | tail -1)"
+expect "generated password stops working" "PAM authentication failed|password authentication failed" "$(pg "${eve_pw}" e2e_eve.eve e2e_eve 'select 1')"
+expect "wrong app password rejected" "PAM authentication failed" "$(pg wrong-password e2e_eve.eve e2e_eve 'select 1')"
+expect "bob's app password does not open eve's login" "PAM authentication failed" "$(pg "${new_pw}" e2e_eve.eve e2e_eve 'select 1')"
+expect "bob still uses his generated password" "^1$" "$(pg "${new_pw}" e2e_bob.bob e2e_bob 'select 1')"
+expect "app password needs TLS" "no encryption" "$(pg "${eve_app_pw}" e2e_eve.eve e2e_eve 'select 1' 'sslmode=disable')"
+expect "app password not in logs" "^0$" "$(docker logs "${app}" 2>&1 | grep -c -- "${eve_app_pw}" || true)"
+expect "backups keep the apppw membership" 'GRANT "apppw" TO "e2e_eve.eve"' "$(docker exec "${app}" gosu postgres pg_dumpall -h /var/lib/postgresql/run --globals-only --quote-all-identifiers)"
+
 superuser "update uploads set first_seen = now() - interval '9 days'" pgpanel >/dev/null
 docker restart "${app}" >/dev/null
 wait_healthy
 sleep 3
 remaining=$(docker exec "${app}" ls /app/data/uploads/e2e_bob)
 expect "expired uploads deleted" "^import_me.dump$" "${remaining}"
+expect "app password works after a restart" "^1$" "$(pg "${eve_app_pw}" e2e_eve.eve e2e_eve 'select 1')"
+scim_users '["g-team"]' '[]'
+expect "deleted app password stops working" "PAM authentication failed" "$(pg "${eve_app_pw}" e2e_eve.eve e2e_eve 'select 1')"
+browser eveGeneratedAgain
+eve_pw=$(yq -p json -oy '.evePassword' "${work}/state.json")
+expect "eve connects with the generated password again" "^1$" "$(pg "${eve_pw}" e2e_eve.eve e2e_eve 'select 1')"
+expect "eve left the apppw group" "^0$" "$(superuser "select count(*) from pg_auth_members m join pg_roles r on r.oid = m.member join pg_roles g on g.oid = m.roleid where g.rolname = 'apppw' and r.rolname = 'e2e_eve.eve'")"
 
 superuser "update schedules set next_run = now() - interval '1 minute'" pgpanel >/dev/null
 for _ in $(seq 1 60); do

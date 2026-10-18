@@ -52,6 +52,13 @@ func TestRender(t *testing.T) {
 	if !strings.Contains(out, "hostssl  all      +tenants          203.0.113.10/32  scram-sha-256") {
 		t.Fatal(out)
 	}
+	pam := strings.Index(out, "hostssl  all      +apppw            203.0.113.10/32  pam pamservice=pgpanel")
+	if pam < 0 || pam > strings.Index(out, "+tenants          203.0.113.10/32") {
+		t.Fatal("app password rule must come before the SCRAM rule:\n" + out)
+	}
+	if strings.Contains(out, "host     all      +apppw") {
+		t.Fatal("app passwords must not be accepted without TLS from remote")
+	}
 	if !strings.Contains(out, "local    all      +tenants          peer map=worker") {
 		t.Fatal("worker rule missing")
 	}

@@ -11,18 +11,29 @@
   <h2>Role <code>{{.Name}}</code></h2>
   <p class="muted">Owners: {{range .Owners}}<span class="tag">{{if eq .Kind "group"}}group {{end}}{{.Display}}</span> {{end}}
   Up to {{.ConnLimit}} connections per login.{{if .MaxDatabases}} {{len .Databases}} of {{.MaxDatabases}} databases used.{{end}}</p>
+  {{$apppw := and .Login (eq .Login.Auth "apppw")}}
   <form method="post" action="/roles/{{.Name}}/password" class="inline">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     {{with .Login}}
+    {{if $apppw}}
+    <span>Your login <code>{{.LoginRole}}</code> signs in with a Cloudron app password.</span>
+    <button type="submit" class="secondary">Use a generated password instead</button>
+    {{else}}
     <span>Your login <code>{{.LoginRole}}</code>, password set {{.RotatedAt.UTC.Format "2006-01-02 15:04"}} UTC.</span>
     <button type="submit">New password</button>
+    {{end}}
     {{else}}
     <span>You have no login for this role yet.</span>
     <button type="submit">Create my password</button>
     {{end}}
+    {{if and appPasswords (not $apppw)}}<button type="submit" formaction="/roles/{{.Name}}/apppw" class="secondary">Use a Cloudron app password</button>{{end}}
     <a class="button secondary" href="/roles/{{.Name}}/uploads">Uploads and import</a>
   </form>
-  <p class="muted">Every owner has an own login and password. Changing yours does not affect the others.</p>
+  {{if $apppw}}
+  <p class="muted">Create an app password for <code>{{appDomain}}</code> in your <a href="{{profileURL}}">Cloudron profile</a> and use it with the login above. Each app password works until you delete it there.</p>
+  {{else}}
+  <p class="muted">Every owner has an own login and password. Changing yours does not affect the others.{{if appPasswords}} With a Cloudron app password you manage the password in your Cloudron profile instead, the generated one stops working.{{end}}</p>
+  {{end}}
   {{if .Databases}}
   <table>
     <thead><tr><th>Database</th><th>Size</th><th>Connection URL (add your password)</th><th></th></tr></thead>
@@ -31,7 +42,7 @@
     <tr>
       <td><a href="/databases/{{.}}"><code>{{.}}</code></a></td>
       <td>{{bytes (index $.Data.Stats .).SizeBytes}}</td>
-      <td>{{if $login}}<code class="wrap">{{connURL $login .}}</code>{{else}}<span class="muted">create your password first</span>{{end}}</td>
+      <td>{{if $login}}<code class="wrap" data-copy="connection URL">{{connURL $login .}}</code>{{else}}<span class="muted">create your password first</span>{{end}}</td>
       <td><a class="button secondary" href="/databases/{{.}}">Manage</a></td>
     </tr>
     {{end}}
@@ -49,4 +60,5 @@
   {{end}}
 </section>
 {{end}}
+<script src="/static/copy.js"></script>
 {{end}}

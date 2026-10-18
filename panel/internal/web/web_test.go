@@ -15,7 +15,7 @@ import (
 )
 
 func testServer(t *testing.T) *Server {
-	s, err := New(Config{Origin: "https://pg.example", PublicHost: "pg.example", PublicPort: "5432", Admins: access.Admins{Users: []string{"root_user"}, Groups: []string{"postgres-admins"}}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s, err := New(Config{Origin: "https://pg.example", PublicHost: "pg.example", PublicPort: "5432", BridgeOrigin: "http://172.18.0.1:3006", DashboardURL: "https://my.example", Admins: access.Admins{Users: []string{"root_user"}, Groups: []string{"postgres-admins"}}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,10 +27,11 @@ func TestPagesRender(t *testing.T) {
 	now, pct := time.Now(), 42
 	admin := &store.Session{Username: "ann", DisplayName: "Ann", IsAdmin: true, CSRFToken: "tok"}
 	roles := []store.Role{{Name: "app_one", ConnLimit: 20, Owners: []access.Principal{{Kind: "user", ID: "ann", Display: "ann"}, {Kind: "group", ID: "g1", Display: "dbteam"}}, MaxDatabases: 3, Databases: []string{"app_one"}}}
-	login := &store.Login{LoginRole: "app_one.ann", RoleName: "app_one", Username: "ann", RotatedAt: time.Now()}
+	login := &store.Login{LoginRole: "app_one.ann", RoleName: "app_one", Username: "ann", Auth: store.AuthPassword, RotatedAt: time.Now()}
+	apppwLogin := &store.Login{LoginRole: "app_one.ann", RoleName: "app_one", Username: "ann", Auth: store.AuthAppPassword, RotatedAt: time.Now()}
 	pages := map[string]any{
 		"login":  nil,
-		"home":   homeData{Roles: []roleView{{Role: roles[0], Login: login}, {Role: roles[0]}}, Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20}}},
+		"home":   homeData{Roles: []roleView{{Role: roles[0], Login: login}, {Role: roles[0]}, {Role: roles[0], Login: apppwLogin}}, Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20}}},
 		"role":   rolePageData{Role: roles[0], OwnersText: "user:ann, group:dbteam", Logins: []store.Login{*login}},
 		"admin":  adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}, {Name: "app_two", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n", Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20, Snapshots: 2}}, Disk: &diskUsage{Used: 1 << 30, Size: 4 << 30}, NotifyTo: "dba@example.test", MailReady: true, TestSent: true},
 		"secret": secretData{Login: "app_one.ann", Role: "app_one", Database: "app_one", Password: "pw"},
@@ -61,6 +62,12 @@ func TestPagesRender(t *testing.T) {
 		body := rec.Body.String()
 		if !strings.Contains(body, "</html>") {
 			t.Errorf("%s: incomplete page: %s", page, body)
+		}
+		if page == "home" && (!strings.Contains(body, `formaction="/roles/app_one/apppw"`) || !strings.Contains(body, "signs in with a Cloudron app password") || !strings.Contains(body, `href="https://my.example/#/profile"`)) {
+			t.Errorf("home: app password controls missing")
+		}
+		if (page == "home" || page == "secret") && (!strings.Contains(body, `data-copy="connection URL"`) || !strings.Contains(body, `src="/static/copy.js"`)) {
+			t.Errorf("%s: copy button markup missing", page)
 		}
 		if page == "admin" && !strings.Contains(body, `value="dba@example.test"`) {
 			t.Errorf("admin: notification address missing")

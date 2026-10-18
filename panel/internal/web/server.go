@@ -55,6 +55,9 @@ type Config struct {
 	PGBinDir      string
 	MaxSnapshots  int
 	Mailer        *notify.Mailer // nil without the sendmail addon
+	BridgeOrigin  string         // empty on Cloudron releases without the app bridge, app passwords are off
+	DashboardURL  string         // https://my.fqdn, for the link to the profile
+	AppPWMap      string
 }
 
 type Server struct {
@@ -67,13 +70,14 @@ type Server struct {
 	provider *oidc.Provider
 
 	hbaMu    sync.Mutex
+	appPWMu  sync.Mutex
 	uploadMu sync.Mutex
 	hashWake chan struct{}
 }
 
 func New(cfg Config, st *store.Store, log *slog.Logger) (*Server, error) {
 	s := &Server{cfg: cfg, store: st, log: log, pages: map[string]*template.Template{}, hashWake: make(chan struct{}, 1)}
-	funcs := template.FuncMap{"connURL": s.connURL, "bytes": humanBytes}
+	funcs := template.FuncMap{"connURL": s.connURL, "bytes": humanBytes, "appPasswords": s.appPasswordsEnabled, "profileURL": func() string { return s.cfg.DashboardURL + "/#/profile" }, "appDomain": func() string { return s.cfg.PublicHost }}
 	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error", "database", "restore", "uploads", "import", "role"} {
 		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -95,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /{$}", s.requireLogin(s.home))
 	mux.Handle("POST /logout", s.requireLogin(s.logout))
 	mux.Handle("POST /roles/{name}/password", s.requireLogin(s.setMyPassword))
+	mux.Handle("POST /roles/{name}/apppw", s.requireLogin(s.useAppPassword))
 	mux.Handle("POST /roles/{name}/databases", s.requireLogin(s.createOwnDatabase))
 	mux.Handle("POST /databases/{name}/delete", s.requireLogin(s.deleteDatabase))
 	mux.Handle("GET /databases/{name}", s.requireLogin(s.databasePage))

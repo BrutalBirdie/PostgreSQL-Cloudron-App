@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"pgpanel/internal/access"
+	"pgpanel/internal/apppw"
 	"pgpanel/internal/directory"
 	"pgpanel/internal/hba"
 	"pgpanel/internal/notify"
@@ -29,6 +31,9 @@ var (
 	pgBinDir    = env("PG_BIN_DIR", "/usr/lib/postgresql/18/bin")
 	socketDir   = env("PG_SOCKET_DIR", "/var/lib/postgresql/run")
 )
+
+// appPasswordMap is read by pam-auth without the app's environment, so its path is fixed.
+const appPasswordMap = "/run/pg/hba/apppw.json"
 
 func uploadRetention() time.Duration {
 	n, err := strconv.Atoi(os.Getenv("PG_UPLOAD_RETENTION_DAYS"))
@@ -116,6 +121,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "pam-auth" {
+		if err := pamAuth(); err != nil {
+			fmt.Fprintf(os.Stderr, "pam-auth: login %q: %v\n", os.Getenv("PAM_USER"), err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "render-hba" {
 		if err := renderHBA(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "render-hba:", err)
@@ -127,6 +139,22 @@ func main() {
 		log.Error("panel stopped", "err", err)
 		os.Exit(1)
 	}
+}
+
+// pamAuth is run by pam_exec for logins in the apppw group, see /etc/pam.d/pgpanel.
+func pamAuth() error {
+	if t := os.Getenv("PAM_TYPE"); t != "auth" {
+		return fmt.Errorf("unexpected PAM_TYPE %q", t)
+	}
+	m, err := apppw.ReadMap(appPasswordMap)
+	if err != nil {
+		return err
+	}
+	b, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+	if err != nil {
+		return err
+	}
+	return apppw.Verify(context.Background(), m, http.DefaultClient, os.Getenv("PAM_USER"), apppw.ReadPassword(b))
 }
 
 // renderHBA is called by start.sh, so the allowlist is parsed by the same code as in the panel.
@@ -198,9 +226,15 @@ func serve(log *slog.Logger) error {
 		PGBinDir:      pgBinDir,
 		MaxSnapshots:  maxSnapshots(),
 		Mailer:        notify.FromEnv(),
+		BridgeOrigin:  os.Getenv("CLOUDRON_APP_BRIDGE_ORIGIN"),
+		DashboardURL:  os.Getenv("CLOUDRON_WEBADMIN_ORIGIN"),
+		AppPWMap:      appPasswordMap,
 	}, st, log)
 	if err != nil {
 		return err
+	}
+	if err := srv.WriteAppPasswordMap(ctx); err != nil {
+		return fmt.Errorf("writing the app password map: %w", err)
 	}
 	go srv.PurgeLoop(ctx)
 	go srv.HashLoop(ctx)
