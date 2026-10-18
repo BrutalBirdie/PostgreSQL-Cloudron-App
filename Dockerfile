@@ -10,6 +10,9 @@ FROM cloudron/base:6.0.0@sha256:9bed4c8fa880645f8e669041ee28febe941481d00e9445e3
 
 ARG POSTGRESQL_VERSION=18.6-0ubuntu0.26.04.1
 
+# links the GHCR package to the repo - https://docs.github.com/en/packages/learn-github-packages/connecting-a-repository-to-a-package
+LABEL org.opencontainers.image.source=https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App
+
 RUN mkdir -p /app/code
 WORKDIR /app/code
 
