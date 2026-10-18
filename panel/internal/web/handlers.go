@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"syscall"
 
 	"pgpanel/internal/hba"
 	"pgpanel/internal/store"
@@ -47,6 +48,22 @@ type adminData struct {
 	Roles     []store.Role
 	Databases []store.Database
 	Allowlist string
+	Stats     map[string]store.DatabaseStats
+	Total     store.DatabaseStats
+	Disk      *diskUsage // nil when the volume cannot be read
+}
+
+type diskUsage struct {
+	Used, Size int64
+}
+
+func diskUsageOf(path string) (*diskUsage, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return nil, err
+	}
+	size := int64(st.Blocks) * st.Bsize
+	return &diskUsage{Used: size - int64(st.Bavail)*st.Bsize, Size: size}, nil
 }
 
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +86,23 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	for _, p := range list {
 		b.WriteString(p.String() + "\n")
 	}
-	s.render(w, r, http.StatusOK, "admin", adminData{Roles: roles, Databases: dbs, Allowlist: b.String()})
+	stats, err := s.store.DatabaseStats(ctx, "")
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	var total store.DatabaseStats
+	for _, st := range stats {
+		total.SizeBytes += st.SizeBytes
+		total.Connections += st.Connections
+		total.Snapshots += st.Snapshots
+		total.SnapshotBytes += st.SnapshotBytes
+	}
+	disk, err := diskUsageOf(s.cfg.SnapshotDir)
+	if err != nil {
+		s.log.Warn("reading disk usage", "err", err)
+	}
+	s.render(w, r, http.StatusOK, "admin", adminData{Roles: roles, Databases: dbs, Allowlist: b.String(), Stats: stats, Total: total, Disk: disk})
 }
 
 func (s *Server) auditLog(w http.ResponseWriter, r *http.Request) {

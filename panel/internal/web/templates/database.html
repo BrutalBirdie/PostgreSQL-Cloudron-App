@@ -8,6 +8,18 @@
 Snapshots are stored on this server and are not part of Cloudron backups.</p>
 
 <section class="card">
+  <h2>Usage</h2>
+  {{with .Data.Stats}}
+  <dl>
+    <dt>Database size</dt><dd>{{bytes .SizeBytes}}</dd>
+    <dt>Open connections</dt><dd>{{.Connections}}</dd>
+    <dt>Snapshots</dt><dd>{{.Snapshots}}, {{bytes .SnapshotBytes}} in total</dd>
+    <dt>Latest snapshot</dt><dd>{{with .LastSnapshot}}{{.UTC.Format "2006-01-02 15:04"}} UTC{{else}}<span class="muted">none</span>{{end}}</dd>
+  </dl>
+  {{end}}
+</section>
+
+<section class="card">
   <h2>Automatic snapshots</h2>
   {{with .Data.Schedule}}
   <p>Schedule <code>{{.Cron}}</code> (UTC). Next run: {{.NextRun.UTC.Format "2006-01-02 15:04"}} UTC.</p>

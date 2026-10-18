@@ -121,6 +121,8 @@ ALTER ROLE pgpanel LOGIN NOSUPERUSER CREATEDB CREATEROLE NOREPLICATION NOBYPASSR
 -- roles created by pgpanel are granted back to it with SET, needed for CREATE DATABASE ... OWNER
 ALTER ROLE pgpanel SET createrole_self_grant = 'set';
 GRANT tenants TO pgpanel WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+-- database sizes in the panel - https://www.postgresql.org/docs/18/functions-admin.html#FUNCTIONS-ADMIN-DBOBJECT
+GRANT pg_read_all_stats TO pgpanel;
 
 SELECT 'CREATE DATABASE pgpanel OWNER pgpanel' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'pgpanel') \gexec
 REVOKE ALL ON DATABASE pgpanel FROM PUBLIC;

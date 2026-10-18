@@ -60,6 +60,7 @@ type databaseData struct {
 	Busy         bool
 	MaxSnapshots int
 	Schedule     *store.Schedule
+	Stats        store.DatabaseStats
 }
 
 func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
@@ -86,8 +87,13 @@ func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	stats, err := s.store.DatabaseStats(r.Context(), db.Name)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	busy := len(jobs) > 0 && jobs[0].Active()
-	s.render(w, r, http.StatusOK, "database", databaseData{Database: *db, Snapshots: snaps, Jobs: jobs, Busy: busy, MaxSnapshots: s.cfg.MaxSnapshots, Schedule: sched})
+	s.render(w, r, http.StatusOK, "database", databaseData{Database: *db, Snapshots: snaps, Jobs: jobs, Busy: busy, MaxSnapshots: s.cfg.MaxSnapshots, Schedule: sched, Stats: stats[db.Name]})
 }
 
 func (s *Server) saveSchedule(w http.ResponseWriter, r *http.Request) {

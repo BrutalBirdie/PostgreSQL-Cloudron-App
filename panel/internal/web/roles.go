@@ -41,6 +41,7 @@ type roleView struct {
 
 type homeData struct {
 	Roles []roleView
+	Stats map[string]store.DatabaseStats
 }
 
 func (s *Server) home(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +61,12 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.render(w, r, http.StatusOK, "home", homeData{Roles: views})
+	stats, err := s.store.DatabaseStats(ctx, "")
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.render(w, r, http.StatusOK, "home", homeData{Roles: views, Stats: stats})
 }
 
 type secretData struct {

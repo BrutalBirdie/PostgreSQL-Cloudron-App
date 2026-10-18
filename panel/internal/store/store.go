@@ -472,3 +472,40 @@ func (s *Store) ReloadConfig(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, `SELECT pg_reload_conf()`)
 	return err
 }
+
+type DatabaseStats struct {
+	SizeBytes     int64
+	Connections   int
+	Snapshots     int
+	SnapshotBytes int64
+	LastSnapshot  *time.Time
+}
+
+// DatabaseStats returns sizes and snapshot totals of one database, or of all
+// tenant databases when name is "". pg_database_size needs pg_read_all_stats.
+func (s *Store) DatabaseStats(ctx context.Context, name string) (map[string]DatabaseStats, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT d.datname, pg_database_size(d.oid), coalesce(sd.numbackends, 0),
+       count(sn.id), coalesce(sum(sn.size_bytes), 0)::bigint, max(sn.created_at)
+FROM pg_database d
+JOIN pg_roles r ON r.oid = d.datdba
+LEFT JOIN pg_stat_database sd ON sd.datid = d.oid
+LEFT JOIN snapshots sn ON sn.database = d.datname
+WHERE NOT d.datistemplate AND NOT starts_with(d.datname, '`+InternalPrefix+`') AND r.rolname IN (`+tenantRoles+`)
+  AND ($1 = '' OR d.datname = $1)
+GROUP BY d.datname, d.oid, sd.numbackends`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]DatabaseStats{}
+	for rows.Next() {
+		var n string
+		var st DatabaseStats
+		if err := rows.Scan(&n, &st.SizeBytes, &st.Connections, &st.Snapshots, &st.SnapshotBytes, &st.LastSnapshot); err != nil {
+			return nil, err
+		}
+		out[n] = st
+	}
+	return out, rows.Err()
+}

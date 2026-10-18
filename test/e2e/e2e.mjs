@@ -68,6 +68,7 @@ const steps = {
 
         const res = await page.goto(BASE + '/admin');
         check('admin page loads', res.status() === 200, String(res.status()));
+        check('admin usage shows the data volume', /<dt>Data volume<\/dt><dd>[\d.]+ \w+ of [\d.]+ \w+ used<\/dd>/.test(await page.content()));
 
         await page.fill('textarea[name=allowlist]', '1.2.3.4\nhost all all 0.0.0.0/0 trust');
         await page.click('form[action="/admin/allowlist"] button');
@@ -198,6 +199,8 @@ const steps = {
         html = await page.content();
         check('snapshot listed', html.includes('class="tag">manual'), html.match(/<td class="error">[^<]*/)?.[0] ?? '');
         check('snapshot job done', !html.includes('failed'), html.match(/<span class="error">[^<]*/)?.[0] ?? '');
+        check('usage shows the database size', /<dt>Database size<\/dt><dd>[\d.]+ MiB<\/dd>/.test(html), html.match(/<dt>Database size<\/dt><dd>[^<]*/)?.[0] ?? '');
+        check('usage counts the snapshot', /<dt>Snapshots<\/dt><dd>1, [\d.]+ KiB in total<\/dd>/.test(html), html.match(/<dt>Snapshots<\/dt><dd>[^<]*/)?.[0] ?? '');
 
         const row = page.locator('tbody tr').first();
         state.bobSnapshot = (await row.locator('td').first().textContent()).trim();

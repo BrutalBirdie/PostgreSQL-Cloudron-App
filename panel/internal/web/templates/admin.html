@@ -3,6 +3,18 @@
 <h1>Admin</h1>
 
 <section class="card">
+  <h2>Usage</h2>
+  {{with .Data.Total}}
+  <dl>
+    <dt>Databases</dt><dd>{{len $.Data.Databases}}, {{bytes .SizeBytes}} in total</dd>
+    <dt>Open connections</dt><dd>{{.Connections}}</dd>
+    <dt>Snapshots</dt><dd>{{.Snapshots}}, {{bytes .SnapshotBytes}} in total</dd>
+    {{with $.Data.Disk}}<dt>Data volume</dt><dd>{{bytes .Used}} of {{bytes .Size}} used</dd>{{end}}
+  </dl>
+  {{end}}
+</section>
+
+<section class="card">
   <h2>Allowed networks</h2>
   <p>Remote clients can only connect from these addresses or networks. An empty list blocks all remote connections. One entry per line, for example <code>203.0.113.10</code> or <code>2001:db8::/48</code>.</p>
   <form method="post" action="/admin/allowlist">
@@ -69,16 +81,20 @@
 <section class="card">
   <h2>Databases</h2>
   <table>
-    <thead><tr><th>Database</th><th>Owner role</th><th></th></tr></thead>
+    <thead><tr><th>Database</th><th>Owner role</th><th>Size</th><th>Connections</th><th>Snapshots</th><th></th></tr></thead>
     <tbody>
     {{range .Data.Databases}}
     <tr>
       <td><a href="/databases/{{.Name}}"><code>{{.Name}}</code></a></td>
       <td><code>{{.Owner}}</code></td>
+      {{$st := index $.Data.Stats .Name}}
+      <td>{{bytes $st.SizeBytes}}</td>
+      <td>{{$st.Connections}}</td>
+      <td>{{$st.Snapshots}} ({{bytes $st.SnapshotBytes}})</td>
       <td><a class="button secondary" href="/databases/{{.Name}}">Manage</a></td>
     </tr>
     {{else}}
-    <tr><td colspan="3">No databases yet.</td></tr>
+    <tr><td colspan="6">No databases yet.</td></tr>
     {{end}}
     </tbody>
   </table>

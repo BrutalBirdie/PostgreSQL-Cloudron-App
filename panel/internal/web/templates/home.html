@@ -25,11 +25,12 @@
   <p class="muted">Every owner has an own login and password. Changing yours does not affect the others.</p>
   {{if .Databases}}
   <table>
-    <thead><tr><th>Database</th><th>Connection URL (add your password)</th><th></th></tr></thead>
+    <thead><tr><th>Database</th><th>Size</th><th>Connection URL (add your password)</th><th></th></tr></thead>
     <tbody>
     {{range .Databases}}
     <tr>
       <td><a href="/databases/{{.}}"><code>{{.}}</code></a></td>
+      <td>{{bytes (index $.Data.Stats .).SizeBytes}}</td>
       <td>{{if $login}}<code class="wrap">{{connURL $login .}}</code>{{else}}<span class="muted">create your password first</span>{{end}}</td>
       <td><a class="button secondary" href="/databases/{{.}}">Manage</a></td>
     </tr>
