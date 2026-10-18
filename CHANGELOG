@@ -1,3 +1,7 @@
+[1.3.0]
+* Logins can use Cloudron app passwords instead of a generated password, created in the Cloudron profile (needs Cloudron 10.0.5 or newer)
+* Copy buttons next to connection URLs and new passwords
+
 [1.2.0]
 * Email to the role owners when a snapshot, restore or import fails, admins can add addresses that get every failure
 * Mail is sent over STARTTLS with the Cloudron mail server certificate verified
