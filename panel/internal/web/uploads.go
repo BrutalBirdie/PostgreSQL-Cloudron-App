@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -77,9 +78,24 @@ type uploadView struct {
 
 type uploadsData struct {
 	Role     store.Role
+	Roles    []string // role picker, the user's roles plus the shown one
 	Uploads  []uploadView
 	Dir      string
 	KeepDays int
+}
+
+// uploadsStart opens the uploads of the user's first role.
+func (s *Server) uploadsStart(w http.ResponseWriter, r *http.Request) {
+	roles, err := s.store.RolesOwnedBy(r.Context(), memberFrom(r))
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if len(roles) == 0 {
+		s.render(w, r, http.StatusOK, "uploads", uploadsData{})
+		return
+	}
+	http.Redirect(w, r, "/roles/"+roles[0].Name+"/uploads", http.StatusSeeOther)
 }
 
 func (s *Server) uploadsPage(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +122,19 @@ func (s *Server) uploadsPage(w http.ResponseWriter, r *http.Request) {
 	for i, up := range list {
 		views[i] = s.viewUpload(up)
 	}
-	s.render(w, r, http.StatusOK, "uploads", uploadsData{Role: *role, Uploads: views, Dir: s.uploadDir(role.Name), KeepDays: int(s.cfg.UploadKeep.Hours() / 24)})
+	owned, err := s.store.RolesOwnedBy(r.Context(), memberFrom(r))
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	var picker []string
+	for _, o := range owned {
+		picker = append(picker, o.Name)
+	}
+	if !slices.Contains(picker, role.Name) {
+		picker = append(picker, role.Name)
+	}
+	s.render(w, r, http.StatusOK, "uploads", uploadsData{Role: *role, Roles: picker, Uploads: views, Dir: s.uploadDir(role.Name), KeepDays: int(s.cfg.UploadKeep.Hours() / 24)})
 }
 
 func (s *Server) viewUpload(up store.Upload) uploadView {
@@ -421,21 +449,6 @@ func (s *Server) removeUpload(ctx context.Context, up store.Upload) error {
 		return err
 	}
 	return s.store.DeleteUpload(ctx, up.ID)
-}
-
-type importData struct {
-	Upload   uploadView
-	Role     store.Role
-	Database string
-}
-
-func (s *Server) importPage(w http.ResponseWriter, r *http.Request) {
-	up, role, err := s.authorizeUpload(r)
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "import", importData{Upload: s.viewUpload(*up), Role: *role, Database: r.URL.Query().Get("database")})
 }
 
 func (s *Server) importUpload(w http.ResponseWriter, r *http.Request) {

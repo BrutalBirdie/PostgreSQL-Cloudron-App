@@ -15,8 +15,8 @@ import (
 // SettingNotifyTo holds the admin addresses that get every failure.
 const SettingNotifyTo = "notify_admin_email"
 
-// NotifyFailures mails the owners of a database, and the admin addresses, when
-// one of its jobs failed. The notified flag lives in the jobs table, so a
+// NotifyFailures mails the owners of a database who opted in, and the admin
+// addresses, when one of its jobs failed. The notified flag lives in the jobs table, so a
 // restart neither repeats nor loses a mail.
 func (w *Worker) NotifyFailures(ctx context.Context, interval time.Duration) {
 	if w.cfg.Mailer == nil {
@@ -63,8 +63,8 @@ func (w *Worker) notifyFailures(ctx context.Context) {
 	}
 }
 
-// recipients are the admin addresses plus the owners of the database's role.
-// When the directory is down only the admin addresses are used.
+// recipients are the admin addresses plus the owners of the database's role
+// who opted in. When the directory is down only the admin addresses are used.
 func (w *Worker) recipients(ctx context.Context, database string) []string {
 	setting, err := w.store.Setting(ctx, SettingNotifyTo)
 	if err != nil {
@@ -98,13 +98,17 @@ func (w *Worker) ownerEmails(ctx context.Context, owners []access.Principal) ([]
 	if len(owners) == 0 {
 		return nil, nil
 	}
+	optIn, err := w.store.NotifyOptIns(ctx)
+	if err != nil || len(optIn) == 0 {
+		return nil, err
+	}
 	users, _, err := w.cfg.Directory.Directory(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, u := range users {
-		if u.Email != "" && access.Owns(owners, u.Member()) {
+		if u.Email != "" && optIn[u.Username] && access.Owns(owners, u.Member()) {
 			out = append(out, u.Email)
 		}
 	}

@@ -137,6 +137,20 @@ expect "no remote access before allowlist" "rejects connection" "$(pg x e2e_bob 
 
 browser admin
 expect "test mail delivered" "^1$" "$(mails dba@example.test 'PostgreSQL: test mail')"
+
+echo "==> Server parameters"
+browser adminServer
+for _ in $(seq 1 20); do
+    [[ "$(superuser 'show work_mem')" == "8MB" ]] && break
+    sleep 1
+done
+expect "reloadable parameter applied by the worker" "^8MB$" "$(superuser 'show work_mem')"
+expect "restart-only parameter waits for a restart" "^100$" "$(superuser 'show max_connections')"
+expect "parameter file only writable by postgres" "^postgres 644$" "$(docker exec "${app}" stat -c '%U %a' /run/pg/tuning.conf)"
+expect "parameter file content" "work_mem = '8MB'" "$(docker exec "${app}" cat /run/pg/tuning.conf)"
+expect "injected parameter never written" "^0$" "$(docker exec "${app}" grep -c archive_command /run/pg/tuning.conf || true)"
+expect "panel and worker roles ignore tenant timeouts" "idle_in_transaction_session_timeout=0" "$(superuser "select setconfig from pg_db_role_setting s join pg_roles r on r.oid = s.setrole where r.rolname = 'pgpanel'")"
+browser adminServer2
 browser bobLogin
 browser eveLogin
 bob_pw=$(yq -p json -oy '.bobPassword' "${work}/state.json")
@@ -206,6 +220,14 @@ pg "${new_pw}" e2e_bob.bob e2e_bob 'delete from t; insert into t values (99)' >/
 browser bob2
 expect "restore brings data back" "^1,2,3$" "$(pg "${new_pw}" e2e_bob.bob e2e_bob "select string_agg(x::text, ',' order by x) from t")"
 expect "restored objects owned by bob" "^e2e_bob$" "$(pg "${new_pw}" e2e_bob.bob e2e_bob "select tableowner from pg_tables where tablename = 't'")"
+expect "notification opt-in stored" "^t$" "$(superuser "select notify_failures from user_prefs where username = 'bob'" pgpanel)"
+
+echo "==> Connections and snapshots overview"
+pg "${new_pw}" e2e_bob.bob e2e_bob 'select pg_sleep(20)' >/dev/null &
+sleeper=$!
+sleep 2
+browser adminConnections
+wait "${sleeper}" 2>/dev/null || true
 
 echo "==> Snapshot storage"
 snap_file=$(docker exec "${app}" find /var/lib/postgresql/snapshots -name '*.dump' | head -1)
@@ -283,7 +305,7 @@ failed_subject='PostgreSQL: import of e2e_bob failed'
 wait_mail bob@example.test 'create extension "file_fdw"' && pass "owner mailed the error of the failed import" || fail "owner mailed the error of the failed import" "$(mail_text bob@example.test | tail -20)"
 wait_mail dba@example.test 'create extension "file_fdw"' && pass "admin address mailed the error of the failed import" || fail "admin address mailed the error of the failed import" "$(ls "${work}/mail")"
 expect "failure mail subject" "^[1-9]" "$(mails bob@example.test "${failed_subject}")"
-expect "group owner mailed" "^[1-9]" "$(mails carol@example.test "${failed_subject}")"
+expect "group owner without opt-in not mailed" "^0$" "$(mails carol@example.test "${failed_subject}")"
 expect "non-owner not mailed" "^0$" "$(mails eve@example.test 'PostgreSQL: import')"
 for _ in $(seq 1 10); do
     [[ "$(superuser "select count(*) from jobs where status = 'failed' and not notified" pgpanel)" == "0" ]] && break
@@ -320,6 +342,8 @@ wait_healthy
 sleep 3
 remaining=$(docker exec "${app}" ls /app/data/uploads/e2e_bob)
 expect "expired uploads deleted" "^import_me.dump$" "${remaining}"
+expect "restart-only parameter applied after a restart" "^150$" "$(superuser 'show max_connections')"
+expect "reloadable parameter kept after a restart" "^8MB$" "$(superuser 'show work_mem')"
 expect "app password works after a restart" "^1$" "$(pg "${eve_app_pw}" e2e_eve.eve e2e_eve 'select 1')"
 scim_users '["g-team"]' '[]'
 expect "deleted app password stops working" "PAM authentication failed" "$(pg "${eve_app_pw}" e2e_eve.eve e2e_eve 'select 1')"

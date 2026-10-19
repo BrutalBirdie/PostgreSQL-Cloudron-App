@@ -1,64 +1,52 @@
 {{define "content"}}
-{{$csrf := .Session.CSRFToken}}
-<h1>My databases</h1>
+{{$csrf := .Session.CSRFToken}}{{$admin := .Session.IsAdmin}}
+<div class="page-head"><div><h1>My databases</h1></div></div>
 {{if not .Data.Roles}}
-<p>No database roles are assigned to you yet. Ask an administrator to add you or one of your groups as owner.</p>
+<section class="card"><p>No database roles are assigned to you yet. Ask an administrator to add you or one of your groups as owner.</p></section>
 {{end}}
+<div class="stack">
 {{range .Data.Roles}}
-{{$role := .Name}}
 {{$login := ""}}{{with .Login}}{{$login = .LoginRole}}{{end}}
-<section class="card">
-  <h2>Role <code>{{.Name}}</code></h2>
-  <p class="muted">Owners: {{range .Owners}}<span class="tag">{{if eq .Kind "group"}}group {{end}}{{.Display}}</span> {{end}}
-  Up to {{.ConnLimit}} connections per login.{{if .MaxDatabases}} {{len .Databases}} of {{.MaxDatabases}} databases used.{{end}}</p>
-  {{$apppw := and .Login (eq .Login.Auth "apppw")}}
-  <form method="post" action="/roles/{{.Name}}/password" class="inline">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
+<section class="card role" id="role-{{.Name}}">
+  <header class="role-head">
+    <div><span class="eyebrow">Role</span><h2>{{.Name}}</h2></div>
+    <div class="btns">
+      {{if .MaxDatabases}}{{if lt (len .Databases) .MaxDatabases}}
+      <button type="button" class="ib" popovertarget="sheet-newdb-{{.Name}}" aria-label="New database" data-tip="New database">{{icon "plus"}}<span class="lbl">New</span></button>
+      {{else}}
+      <button type="button" class="ib" disabled aria-label="Limit of {{.MaxDatabases}} databases reached" data-tip="Limit of {{.MaxDatabases}} databases reached">{{icon "plus"}}<span class="lbl">New</span></button>
+      {{end}}{{end}}
+      <button type="button" class="ib" popovertarget="sheet-role-{{.Name}}" aria-label="Role settings and password" data-tip="Role settings and password">{{icon "settings"}}<span class="lbl">Settings</span></button>
+    </div>
+  </header>
+  <div class="meta">
     {{with .Login}}
-    {{if $apppw}}
-    <span>Your login <code>{{.LoginRole}}</code> signs in with a Cloudron app password.</span>
-    <button type="submit" class="secondary">Use a generated password instead</button>
+    <span class="chip">{{icon "user"}} <span class="mono">{{.LoginRole}}</span></span>
+    {{if eq .Auth "apppw"}}<span class="chip">{{icon "cloud"}} Cloudron app password</span>{{else}}<span class="chip">{{icon "key-round"}} Password set {{ago .RotatedAt}}</span>{{end}}
     {{else}}
-    <span>Your login <code>{{.LoginRole}}</code>, password set {{.RotatedAt.UTC.Format "2006-01-02 15:04"}} UTC.</span>
-    <button type="submit">New password</button>
+    <span class="chip warn">{{icon "key-round"}} No login yet</span>
     {{end}}
-    {{else}}
-    <span>You have no login for this role yet.</span>
-    <button type="submit">Create my password</button>
-    {{end}}
-    {{if and appPasswords (not $apppw)}}<button type="submit" formaction="/roles/{{.Name}}/apppw" class="secondary">Use a Cloudron app password</button>{{end}}
-    <a class="button secondary" href="/roles/{{.Name}}/uploads">Uploads and import</a>
-  </form>
-  {{if $apppw}}
-  <p class="muted">Create an app password for <code>{{appDomain}}</code> in your <a href="{{profileURL}}">Cloudron profile</a> and use it with the login above. Each app password works until you delete it there.</p>
-  {{else}}
-  <p class="muted">Every owner has an own login and password. Changing yours does not affect the others.{{if appPasswords}} With a Cloudron app password you manage the password in your Cloudron profile instead, the generated one stops working.{{end}}</p>
-  {{end}}
+    {{if .MaxDatabases}}<span class="chip">{{icon "database"}} {{len .Databases}} of {{.MaxDatabases}}</span>{{end}}
+    <span class="chip">{{icon "plug"}} {{.ConnLimit}} connections</span>
+  </div>
   {{if .Databases}}
-  <table>
-    <thead><tr><th>Database</th><th>Size</th><th>Connection URL (add your password)</th><th></th></tr></thead>
-    <tbody>
-    {{range .Databases}}
-    <tr>
-      <td><a href="/databases/{{.}}"><code>{{.}}</code></a></td>
-      <td>{{bytes (index $.Data.Stats .).SizeBytes}}</td>
-      <td>{{if $login}}<code class="wrap" data-copy="connection URL">{{connURL $login .}}</code>{{else}}<span class="muted">create your password first</span>{{end}}</td>
-      <td><a class="button secondary" href="/databases/{{.}}">Manage</a></td>
-    </tr>
+  <ul class="dblist">
+    {{range .Databases}}{{$st := index $.Data.Stats .}}
+    <li class="dbrow">
+      <div class="dbname"><a href="/databases/{{.}}">{{.}}</a><span class="sub">{{bytes $st.SizeBytes}} · {{$st.Connections}} open connections</span></div>
+      {{if $login}}{{with connURL $login .}}{{template "copybox" (dict "Text" . "Label" "Copy connection URL")}}{{end}}
+      {{else}}<div class="url empty">{{icon "key-round"}} Create your login in the role settings to get a connection URL.</div>{{end}}
+      <span class="go" aria-hidden="true">{{icon "chevron-right"}}</span>
+    </li>
     {{end}}
-    </tbody>
-  </table>
+  </ul>
   {{else}}
-  <p>This role owns no databases.</p>
-  {{end}}
-  {{if and .MaxDatabases (lt (len .Databases) .MaxDatabases)}}
-  <form method="post" action="/roles/{{.Name}}/databases" class="inline">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
-    <input type="text" name="name" required pattern="[a-z][a-z0-9_]{2,62}" placeholder="new database name" autocomplete="off" aria-label="New database name">
-    <button type="submit">Create database</button>
-  </form>
+  <p class="muted">This role owns no databases.</p>
   {{end}}
 </section>
+{{template "rolesheet" (dict "R" . "Admin" false "IsAdmin" $admin "CSRF" $csrf)}}
+{{if and .MaxDatabases (lt (len .Databases) .MaxDatabases)}}{{template "newdbsheet" (dict "R" . "CSRF" $csrf)}}{{end}}
 {{end}}
-<script src="/static/copy.js"></script>
+</div>
+{{if .Data.Roles}}<p class="hint">Connection URLs leave out your password. Add it in your client or put it in <span class="mono">~/.pgpass</span>.</p>{{end}}
 {{end}}

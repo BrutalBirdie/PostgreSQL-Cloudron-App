@@ -25,61 +25,71 @@ func testServer(t *testing.T) *Server {
 func TestPagesRender(t *testing.T) {
 	s := testServer(t)
 	now, pct := time.Now(), 42
-	admin := &store.Session{Username: "ann", DisplayName: "Ann", IsAdmin: true, CSRFToken: "tok"}
+	snapID := int64(7)
+	admin := &store.Session{Username: "ann", DisplayName: "Ann Admin", IsAdmin: true, CSRFToken: "tok"}
 	roles := []store.Role{{Name: "app_one", ConnLimit: 20, Owners: []access.Principal{{Kind: "user", ID: "ann", Display: "ann"}, {Kind: "group", ID: "g1", Display: "dbteam"}}, MaxDatabases: 3, Databases: []string{"app_one"}}}
 	login := &store.Login{LoginRole: "app_one.ann", RoleName: "app_one", Username: "ann", Auth: store.AuthPassword, RotatedAt: time.Now()}
 	apppwLogin := &store.Login{LoginRole: "app_one.ann", RoleName: "app_one", Username: "ann", Auth: store.AuthAppPassword, RotatedAt: time.Now()}
-	pages := map[string]any{
-		"login":  nil,
-		"home":   homeData{Roles: []roleView{{Role: roles[0], Login: login}, {Role: roles[0]}, {Role: roles[0], Login: apppwLogin}}, Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20}}},
-		"role":   rolePageData{Role: roles[0], OwnersText: "user:ann, group:dbteam", Logins: []store.Login{*login}},
-		"admin":  adminData{Roles: roles, Databases: []store.Database{{Name: "app_one", Owner: "app_one"}, {Name: "app_two", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n", Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20, Snapshots: 2}}, Disk: &diskUsage{Used: 1 << 30, Size: 4 << 30}, NotifyTo: "dba@example.test", MailReady: true, TestSent: true},
-		"secret": secretData{Login: "app_one.ann", Role: "app_one", Database: "app_one", Password: "pw"},
-		"audit":  []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}},
-		"error":  nil,
-		"uploads": uploadsData{Role: roles[0], KeepDays: 8, Uploads: []uploadView{
+	sheets := []roleSheet{{Role: roles[0], Mine: true, Login: login, Logins: []store.Login{*login}, OwnersText: "user:ann, group:dbteam"}, {Role: roles[0], Mine: true}, {Role: roles[0], Mine: true, Login: apppwLogin}}
+	snap := store.Snapshot{ID: 7, Database: "app_one", OwnerRole: "app_one", Kind: store.KindPreRestore, SizeBytes: 123456, CreatedBy: "ann", CreatedAt: time.Now(), Note: "automatic"}
+	running := store.Job{ID: 2, Kind: "restore", SnapshotID: &snapID, Status: "running", CreatedAt: time.Now(), StartedAt: &now, Progress: &pct, Step: `Processing data for table "public.t"`, RequestedBy: "ann"}
+	type page struct {
+		name string
+		data any
+		want []string
+	}
+	pages := []page{
+		{"login", nil, []string{"Sign in with Cloudron"}},
+		{"home", homeData{Roles: sheets, Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20}}},
+			[]string{`action="/roles/app_one/apppw"`, "Cloudron app password", `href="https://my.example/#/profile"`, "7.0 MiB", `data-copy="postgresql://app_one.ann@pg.example:5432/app_one?sslmode=verify-full&amp;sslrootcert=system"`, `popovertarget="sheet-role-app_one"`, `id="sheet-newdb-app_one"`}},
+		{"secret", secretData{Login: "app_one.ann", Role: "app_one", Database: "app_one", Password: "pw"}, []string{`data-copy="pw"`, `<code class="secret"`}},
+		{"error", nil, []string{"Something went wrong"}},
+		{"uploads", uploadsData{Role: roles[0], Roles: []string{"app_one"}, KeepDays: 8, Uploads: []uploadView{
 			{Upload: store.Upload{ID: 1, FileName: "a.dump", SizeBytes: 10, FirstSeen: time.Now(), SHA256: "ab", VerifiedBy: "browser"}, Format: "custom"},
 			{Upload: store.Upload{ID: 3, FileName: "c.dump", SizeBytes: 10, FirstSeen: time.Now(), SHA256: "ab"}, Format: "custom"},
 			{Upload: store.Upload{ID: 2, FileName: "b.sql", Keep: true, FirstSeen: time.Now()}, FormatErr: "plain SQL"},
-		}},
-		"import":  importData{Role: roles[0], Database: "app_one", Upload: uploadView{Upload: store.Upload{ID: 1, FileName: "a.dump"}, Format: "custom"}},
-		"restore": restoreData{Snapshot: store.Snapshot{ID: 7, CreatedAt: time.Now(), SizeBytes: 10}, Database: store.Database{Name: "app_one", Owner: "app_one"}},
-		"database": databaseData{
-			Database:     store.Database{Name: "app_one", Owner: "app_one"},
-			Snapshots:    []store.Snapshot{{ID: 7, Database: "app_one", OwnerRole: "app_one", SizeBytes: 123456, CreatedBy: "ann", CreatedAt: time.Now(), Note: "automatic"}},
-			Jobs:         []store.Job{{ID: 1, Kind: "import", Status: "running", CreatedAt: time.Now(), StartedAt: &now, Progress: &pct, Step: `Processing data for table "public.t"`}},
-			Busy:         true,
-			MaxSnapshots: 7,
-			Schedule:     &store.Schedule{Database: "app_one", OwnerRole: "app_one", Cron: "0 3 * * *", NextRun: time.Now()},
-			Stats:        store.DatabaseStats{SizeBytes: 7 << 20, Snapshots: 1, LastSnapshot: &now},
-		},
+		}}, []string{`id="sheet-import-1"`, `action="/uploads/3/verify"`, `aria-pressed="true"`}},
+		{"database", databaseData{
+			Database: store.Database{Name: "app_one", Owner: "app_one"}, Role: roles[0], URL: "postgresql://x",
+			Snapshots: []store.Snapshot{snap}, Jobs: []store.Job{running, {ID: 1, Kind: "import", Status: "failed", Error: "boom", CreatedAt: time.Now()}}, Active: &running, JobKey: "2:running",
+			MaxSnapshots: 7, Schedule: &store.Schedule{Database: "app_one", OwnerRole: "app_one", Cron: "0 3 * * *", NextRun: time.Now()}, Presets: cronPresets, Preset: "0 3 * * *",
+			Stats: store.DatabaseStats{SizeBytes: 7 << 20, Snapshots: 1, LastSnapshot: &now}, Back: "/", BackLabel: "My databases",
+		}, []string{`<progress id="job-bar" max="100" value="42"`, "Restore of #7", `data-key="2:running"`, `value="0 3 * * *" checked`, `id="sheet-restore-7"`, "before restore", "boom"}},
 	}
-	for page, data := range pages {
+	adminBase := adminData{Tabs: adminTabs, Roles: sheets[:1], Databases: []store.Database{{Name: "app_one", Owner: "app_one"}}, Allowlist: "203.0.113.10/32\n",
+		Stats: map[string]store.DatabaseStats{"app_one": {SizeBytes: 7 << 20, Snapshots: 2}}, Disk: &diskUsage{Used: 1 << 30, Size: 4 << 30}, MaxConnections: "100",
+		NotifyTo: "dba@example.test", MailReady: true, TestSent: true, OptIns: 1, ClientIP: "192.0.2.4",
+		Params: []paramView{{Name: "work_mem", Value: "8MB", Running: "8MB", Default: "4MB"}, {Name: "max_connections", Running: "100", Restart: true, Pending: true}}, RestartPending: true,
+		Connections: []store.Connection{{PID: 1, Database: "app_one", Login: "app_one.ann", ClientAddr: "192.0.2.4", State: "idle in transaction", BackendStart: now, StateChange: &now, TLSVersion: "TLSv1.3"}},
+		Snapshots: []store.Snapshot{snap}, Filters: []filterOption{{"", "All", false}, {"db:app_one", "app_one", true}}, Filter: "db:app_one",
+		Audit: []store.AuditEntry{{At: time.Now(), Actor: "ann", Action: "role.create", Target: "app_one"}}}
+	adminWant := map[string][]string{
+		"overview": {`href="/admin/connections"`, "of 100 allowed", `value="25"`}, "connections": {"idle in transaction", "192.0.2.4"}, "snapshots": {`href="/databases/app_one"`, `aria-current="page">app_one`},
+		"roles": {`id="sheet-role-app_one"`, `action="/admin/roles/app_one/update"`, "user:ann, group:dbteam"}, "databases": {`class="rowlink" href="/databases/app_one"`},
+		"network": {"203.0.113.10/32", "192.0.2.4"}, "notifications": {`value="dba@example.test"`, "1 user has"}, "server": {`name="work_mem"`, "restart pending"}, "audit": {"role.create"},
+	}
+	for view, want := range adminWant {
+		d := adminBase
+		d.View, d.Tab = view, adminViews[view]
+		pages = append(pages, page{"admin", d, want})
+	}
+	for _, p := range pages {
 		req := httptest.NewRequest("GET", "/", nil)
 		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, admin))
 		rec := httptest.NewRecorder()
-		s.render(rec, req, http.StatusOK, page, data)
+		s.render(rec, req, http.StatusOK, p.name, p.data)
 		body := rec.Body.String()
 		if !strings.Contains(body, "</html>") {
-			t.Errorf("%s: incomplete page: %s", page, body)
+			t.Errorf("%s: incomplete page: %s", p.name, body)
+			continue
 		}
-		if page == "home" && (!strings.Contains(body, `formaction="/roles/app_one/apppw"`) || !strings.Contains(body, "signs in with a Cloudron app password") || !strings.Contains(body, `href="https://my.example/#/profile"`)) {
-			t.Errorf("home: app password controls missing")
+		for _, w := range p.want {
+			if !strings.Contains(body, w) {
+				t.Errorf("%s %v: %q missing", p.name, p.data != nil, w)
+			}
 		}
-		if (page == "home" || page == "secret") && (!strings.Contains(body, `data-copy="connection URL"`) || !strings.Contains(body, `src="/static/copy.js"`)) {
-			t.Errorf("%s: copy button markup missing", page)
-		}
-		if page == "admin" && !strings.Contains(body, `value="dba@example.test"`) {
-			t.Errorf("admin: notification address missing")
-		}
-		if (page == "home" || page == "admin") && !strings.Contains(body, "7.0 MiB") {
-			t.Errorf("%s: database size missing", page)
-		}
-		if page == "database" && !strings.Contains(body, `<progress max="100" value="42">`) {
-			t.Errorf("database: progress bar missing")
-		}
-		if page != "login" && !strings.Contains(body, `value="tok"`) {
-			t.Errorf("%s: csrf token missing in logout form", page)
+		if p.name != "login" && !strings.Contains(body, `value="tok"`) {
+			t.Errorf("%s: csrf token missing in logout form", p.name)
 		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 	"pgpanel/internal/hba"
 	"pgpanel/internal/notify"
 	"pgpanel/internal/store"
+	"pgpanel/internal/tuning"
 	"pgpanel/internal/web"
 	"pgpanel/internal/worker"
 )
@@ -34,6 +36,8 @@ var (
 
 // appPasswordMap is read by pam-auth without the app's environment, so its path is fixed.
 const appPasswordMap = "/run/pg/hba/apppw.json"
+
+const tuningFile = "/run/pg/tuning.conf"
 
 func uploadRetention() time.Duration {
 	n, err := strconv.Atoi(os.Getenv("PG_UPLOAD_RETENTION_DAYS"))
@@ -99,8 +103,9 @@ func runWorker(log *slog.Logger) error {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	w := worker.New(worker.Config{Directory: scimClient(), Admins: admins(), SnapshotDir: snapshotDir, UploadDir: uploadDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots(), Mailer: notify.FromEnv(), Origin: os.Getenv("CLOUDRON_APP_ORIGIN")}, st, log)
+	w := worker.New(worker.Config{Directory: scimClient(), Admins: admins(), SnapshotDir: snapshotDir, UploadDir: uploadDir, SocketDir: socketDir, BinDir: pgBinDir, MaxSnapshots: maxSnapshots(), Mailer: notify.FromEnv(), Origin: os.Getenv("CLOUDRON_APP_ORIGIN"), TuningFile: tuningFile}, st, log)
 	go w.AccessSync(ctx, accessSyncInterval())
+	go w.ApplyTuning(ctx)
 	go w.NotifyFailures(ctx, durationEnv("PANEL_NOTIFY_INTERVAL", 30*time.Second))
 	return w.Run(ctx)
 }
@@ -124,6 +129,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "pam-auth" {
 		if err := pamAuth(); err != nil {
 			fmt.Fprintf(os.Stderr, "pam-auth: login %q: %v\n", os.Getenv("PAM_USER"), err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "render-tuning" {
+		if err := renderTuning(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "render-tuning:", err)
 			os.Exit(1)
 		}
 		return
@@ -176,6 +188,33 @@ func renderHBA(args []string) error {
 		}
 	}
 	return hba.WriteFileAtomic(*out, hba.Render(list, *localhost), 0o644)
+}
+
+// renderTuning is called by start.sh as postgres before PostgreSQL starts, see worker.ApplyTuning.
+func renderTuning(args []string) error {
+	fs := flag.NewFlagSet("render-tuning", flag.ExitOnError)
+	out := fs.String("out", tuningFile, "include file to write")
+	fs.Parse(args)
+
+	content := tuning.Render(nil)
+	ctx := context.Background()
+	st, err := store.Open(ctx, env("WORKER_DATABASE_URL", "host="+socketDir+" user=postgres dbname=pgpanel"))
+	if err == nil {
+		defer st.Close()
+		err = st.SchemaReady(ctx)
+	}
+	if err == nil {
+		var invalid []error
+		content, invalid, err = worker.TuningFile(ctx, st)
+		for _, e := range invalid {
+			fmt.Fprintln(os.Stderr, "==> Ignoring server parameter:", e)
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "==> No server parameters from the panel:", err)
+		content = tuning.Render(nil)
+	}
+	return hba.WriteFileAtomic(*out, content, 0o644)
 }
 
 func serve(log *slog.Logger) error {
@@ -246,6 +285,8 @@ func serve(log *slog.Logger) error {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		// ends the live update streams on shutdown, Shutdown does not cancel running requests
+		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 	go func() {
 		<-ctx.Done()

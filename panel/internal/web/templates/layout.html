@@ -1,29 +1,66 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{{if .Prefs.ShowLabels}} class="labels"{{end}}>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{.Title}}</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/logo.png">
 </head>
 <body>
-<header>
-  <a class="brand" href="/"><img src="/static/logo.png" alt="" width="28" height="28"> PostgreSQL</a>
-  {{with .Session}}
-  <nav>
-    <a href="/">My databases</a>
-    {{if .IsAdmin}}<a href="/admin">Admin</a><a href="/admin/audit">Audit log</a>{{end}}
-    {{if $.PGAdminPath}}<a href="{{$.PGAdminPath}}/">pgAdmin</a>{{end}}
-    <form method="post" action="/logout" class="inline">
-      <input type="hidden" name="csrf" value="{{.CSRFToken}}">
-      <button type="submit" class="link">Log out {{.DisplayName}}</button>
-    </form>
-  </nav>
-  {{end}}
+{{template "icons"}}
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/static/logo.png" alt="" width="32" height="32"> PostgreSQL</a>
+    {{with .Session}}
+    <nav class="nav" aria-label="Main">{{template "navlinks" $}}
+      {{if $.PGAdminPath}}<a href="{{$.PGAdminPath}}/">{{icon "external-link"}}<span>pgAdmin</span></a>{{end}}
+    </nav>
+    <button type="button" class="avatar" popovertarget="sheet-account" aria-label="Account of {{.DisplayName}}" data-tip="Account">{{initials .DisplayName}}</button>
+    {{end}}
+  </div>
 </header>
-<main>
+<main class="wrap" id="main">
 {{template "content" .}}
 </main>
+{{with .Session}}
+<nav class="tabbar{{if .IsAdmin}} four{{end}}" aria-label="Main">{{template "navlinks" $}}
+  <button type="button" popovertarget="sheet-account">{{icon "user"}}<span>Account</span></button>
+</nav>
+<div popover id="sheet-account" class="sheet" aria-labelledby="sheet-account-title">
+  {{template "sheethead" (dict "ID" "sheet-account" "Icon" "user" "Title" "Account")}}
+  <div class="sheet-body">
+    <section>
+      <div class="profile"><span class="avatar">{{initials .DisplayName}}</span><span><strong>{{.DisplayName}}</strong><span class="small muted">{{.Username}}{{if .IsAdmin}} · administrator{{end}}</span></span></div>
+    </section>
+    <form method="post" action="/account" class="form" data-autosave>
+      <input type="hidden" name="csrf" value="{{.CSRFToken}}">
+      <input type="hidden" name="next" value="{{$.Path}}">
+      <section>
+        <span class="eyebrow">Notifications</span>
+        {{if $.MailReady}}
+        <label class="switch-row"><span>Email me when a job fails<small>Snapshots, restores and imports of the databases of your roles. Sent to the address of your Cloudron account.</small></span><input type="checkbox" class="switch" name="notify_failures"{{if $.Prefs.NotifyFailures}} checked{{end}}></label>
+        {{else}}
+        <p class="small muted">Outgoing mail is not set up for this app, so there are no notifications.</p>
+        {{end}}
+      </section>
+      <section>
+        <span class="eyebrow">Display</span>
+        <label class="switch-row"><span>Show labels on buttons<small>Text next to every icon.</small></span><input type="checkbox" class="switch" name="show_labels"{{if $.Prefs.ShowLabels}} checked{{end}}></label>
+        <div class="btns no-js"><button type="submit" class="ib primary with-label">{{icon "save"}}<span class="lbl">Save</span></button></div>
+      </section>
+    </form>
+    <section>
+      {{if $.PGAdminPath}}<a class="ib with-label" href="{{$.PGAdminPath}}/">{{icon "external-link"}}<span class="lbl">Open pgAdmin</span></a>{{end}}
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf" value="{{.CSRFToken}}">
+        <button type="submit" class="ib with-label">{{icon "log-out"}}<span class="lbl">Log out</span></button>
+      </form>
+    </section>
+  </div>
+</div>
+{{end}}
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
 </body>
 </html>

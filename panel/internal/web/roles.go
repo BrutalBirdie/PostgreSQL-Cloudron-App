@@ -34,13 +34,39 @@ func owns(r *http.Request, role *store.Role) bool {
 	return access.Owns(role.Owners, memberFrom(r))
 }
 
-type roleView struct {
+// roleSheet is a role with what its settings sheet shows.
+type roleSheet struct {
 	store.Role
-	Login *store.Login // the user's own login, nil until created
+	Mine       bool         // the user owns the role
+	Login      *store.Login // the user's own login, nil until created
+	Logins     []store.Login
+	OwnersText string
+}
+
+// roleSheet loads the user's own login and, for the admin view, all logins.
+func (s *Server) roleSheet(r *http.Request, role store.Role, admin bool) (roleSheet, error) {
+	ctx := r.Context()
+	sheet := roleSheet{Role: role, Mine: owns(r, &role), OwnersText: ownersText(role.Owners)}
+	if sheet.Mine {
+		l, err := s.store.LoginOf(ctx, role.Name, sessionFrom(r).Username)
+		switch {
+		case err == nil:
+			sheet.Login = l
+		case !errors.Is(err, store.ErrNotFound):
+			return sheet, err
+		}
+	}
+	if admin {
+		var err error
+		if sheet.Logins, err = s.store.ListLogins(ctx, role.Name); err != nil {
+			return sheet, err
+		}
+	}
+	return sheet, nil
 }
 
 type homeData struct {
-	Roles []roleView
+	Roles []roleSheet
 	Stats map[string]store.DatabaseStats
 }
 
@@ -51,12 +77,10 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	views := make([]roleView, len(roles))
+	views := make([]roleSheet, len(roles))
 	for i, role := range roles {
-		views[i].Role = role
-		if l, err := s.store.LoginOf(ctx, role.Name, sessionFrom(r).Username); err == nil {
-			views[i].Login = l
-		} else if !errors.Is(err, store.ErrNotFound) {
+		var err error
+		if views[i], err = s.roleSheet(r, role, false); err != nil {
 			s.internalError(w, r, err)
 			return
 		}
@@ -247,29 +271,15 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request) {
 		}
 		s.audit(r, "database.create", name, "owner="+name)
 	}
-	http.Redirect(w, r, "/admin/roles/"+name, http.StatusSeeOther)
+	http.Redirect(w, r, roleSheetURL(name), http.StatusSeeOther)
 }
 
-type rolePageData struct {
-	Role       store.Role
-	OwnersText string
-	Logins     []store.Login
-}
-
+// rolePage is the old address of the role settings, they are a sheet on the roles tab now.
 func (s *Server) rolePage(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	role, err := s.store.GetRole(ctx, r.PathValue("name"))
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	logins, err := s.store.ListLogins(ctx, role.Name)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "role", rolePageData{Role: *role, OwnersText: ownersText(role.Owners), Logins: logins})
+	http.Redirect(w, r, roleSheetURL(r.PathValue("name")), http.StatusSeeOther)
 }
+
+func roleSheetURL(name string) string { return "/admin/roles#sheet-role-" + name }
 
 func (s *Server) updateRole(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
@@ -293,7 +303,7 @@ func (s *Server) updateRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "role.update", name, fmt.Sprintf("owners=%s conn_limit=%d max_databases=%d", ownersText(owners), limit, maxDBs))
-	http.Redirect(w, r, "/admin/roles/"+name, http.StatusSeeOther)
+	http.Redirect(w, r, roleSheetURL(name), http.StatusSeeOther)
 }
 
 func (s *Server) revokeLogin(w http.ResponseWriter, r *http.Request) {
@@ -319,7 +329,7 @@ func (s *Server) revokeLogin(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("writing the app password map", "err", err)
 	}
 	s.audit(r, "login.revoke", login, "role="+name)
-	http.Redirect(w, r, "/admin/roles/"+name, http.StatusSeeOther)
+	http.Redirect(w, r, roleSheetURL(name), http.StatusSeeOther)
 }
 
 func (s *Server) deleteRole(w http.ResponseWriter, r *http.Request) {
@@ -342,7 +352,7 @@ func (s *Server) deleteRole(w http.ResponseWriter, r *http.Request) {
 	if err := os.RemoveAll(s.uploadDir(name)); err != nil {
 		s.log.Error("deleting uploads of dropped role", "role", name, "err", err)
 	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/roles", http.StatusSeeOther)
 }
 
 // createOwnDatabase is the self-service path for owners, limited by the role's max_databases.
@@ -390,5 +400,5 @@ func (s *Server) afterDelete(r *http.Request, db *store.Database) string {
 	if err == nil && owns(r, role) {
 		return "/"
 	}
-	return "/admin"
+	return "/admin/databases"
 }

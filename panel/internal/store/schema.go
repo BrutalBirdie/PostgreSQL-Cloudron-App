@@ -102,4 +102,9 @@ CREATE TABLE IF NOT EXISTS settings (
 -- jobs from before the column existed count as notified, new ones start unnotified
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS notified boolean NOT NULL DEFAULT true;
 ALTER TABLE jobs ALTER COLUMN notified SET DEFAULT false;
-ALTER TABLE role_logins ADD COLUMN IF NOT EXISTS auth text NOT NULL DEFAULT 'password' CHECK (auth IN ('password', 'apppw'));`
+ALTER TABLE role_logins ADD COLUMN IF NOT EXISTS auth text NOT NULL DEFAULT 'password' CHECK (auth IN ('password', 'apppw'));
+CREATE TABLE IF NOT EXISTS user_prefs (
+    username text PRIMARY KEY,
+    notify_failures boolean NOT NULL DEFAULT false,
+    show_labels boolean NOT NULL DEFAULT false
+);`

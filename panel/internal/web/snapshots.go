@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -53,33 +54,56 @@ func (s *Server) authorizeSnapshot(r *http.Request) (*store.Snapshot, *store.Dat
 	return snap, db, nil
 }
 
+type cronPreset struct{ Cron, Label string }
+
+var cronPresets = []cronPreset{{"", "Off"}, {"0 * * * *", "Every hour"}, {"0 */6 * * *", "Every 6 hours"}, {"0 3 * * *", "Daily 03:00 UTC"}, {"0 3 * * 0", "Sundays 03:00 UTC"}}
+
 type databaseData struct {
 	Database     store.Database
+	Role         store.Role
+	URL          string // connection URL with the user's own login, empty without one
 	Snapshots    []store.Snapshot
 	Jobs         []store.Job
-	Busy         bool
+	Active       *store.Job // queued or running job
+	JobKey       string     // newest job and its status, live.js reloads the page parts when it changes
 	MaxSnapshots int
 	Schedule     *store.Schedule
+	Presets      []cronPreset
+	Preset       string // checked preset, "custom" for other schedules
 	Stats        store.DatabaseStats
+	Back, BackLabel string
+}
+
+func jobKey(jobs []store.Job) string {
+	if len(jobs) == 0 {
+		return "none"
+	}
+	return fmt.Sprintf("%d:%s", jobs[0].ID, jobs[0].Status)
 }
 
 func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	db, err := s.authorizeDatabase(r, r.PathValue("name"))
 	if err != nil {
 		s.userError(w, r, err)
 		return
 	}
-	snaps, err := s.store.ListSnapshots(r.Context(), db.Name)
+	role, err := s.store.GetRole(ctx, db.Owner)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	jobs, err := s.store.ListJobs(r.Context(), db.Name, 5)
+	snaps, err := s.store.ListSnapshots(ctx, db.Name)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	sched, err := s.store.GetSchedule(r.Context(), db.Name)
+	jobs, err := s.store.ListJobs(ctx, db.Name, 5)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	sched, err := s.store.GetSchedule(ctx, db.Name)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && sched.OwnerRole != db.Owner) {
 		sched, err = nil, nil
 	}
@@ -87,13 +111,109 @@ func (s *Server) databasePage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	stats, err := s.store.DatabaseStats(r.Context(), db.Name)
+	stats, err := s.store.DatabaseStats(ctx, db.Name)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	busy := len(jobs) > 0 && jobs[0].Active()
-	s.render(w, r, http.StatusOK, "database", databaseData{Database: *db, Snapshots: snaps, Jobs: jobs, Busy: busy, MaxSnapshots: s.cfg.MaxSnapshots, Schedule: sched, Stats: stats[db.Name]})
+	data := databaseData{Database: *db, Role: *role, Snapshots: snaps, Jobs: jobs, JobKey: jobKey(jobs), MaxSnapshots: s.cfg.MaxSnapshots,
+		Schedule: sched, Presets: cronPresets, Preset: "custom", Stats: stats[db.Name], Back: "/", BackLabel: "My databases"}
+	if len(jobs) > 0 && jobs[0].Active() {
+		data.Active = &jobs[0]
+	}
+	current := ""
+	if sched != nil {
+		current = sched.Cron
+	}
+	for _, p := range cronPresets {
+		if p.Cron == current {
+			data.Preset = current
+		}
+	}
+	if login, err := s.store.LoginOf(ctx, role.Name, sessionFrom(r).Username); err == nil && !login.Revoked {
+		data.URL = s.connURL(login.LoginRole, db.Name)
+	}
+	if !owns(r, role) {
+		data.Back, data.BackLabel = "/admin/databases", "Databases"
+	}
+	s.render(w, r, http.StatusOK, "database", data)
+}
+
+type jobEvent struct {
+	Key      string `json:"key"`
+	Active   bool   `json:"active"`
+	Title    string `json:"title,omitempty"`
+	Step     string `json:"step,omitempty"`
+	Progress *int   `json:"progress"`
+}
+
+// databaseEvents streams the state of the newest job as server-sent events.
+// It polls the jobs table, which the worker updates, so it works with any
+// number of panel processes.
+func (s *Server) databaseEvents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	db, err := s.authorizeDatabase(r, r.PathValue("name"))
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	cookie, err := r.Cookie(sessionCookie)
+	if err != nil {
+		http.Error(w, "not logged in", http.StatusForbidden)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	// https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering
+	h.Set("X-Accel-Buffering", "no")
+	rc := http.NewResponseController(w)
+	rc.SetWriteDeadline(time.Time{})
+
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	var last string
+	var lastWrite, lastCheck time.Time
+	for {
+		if time.Since(lastCheck) > 30*time.Second {
+			ok, err := s.store.SessionValid(ctx, cookie.Value, idleTimeout, maxSession)
+			if err != nil || !ok {
+				return
+			}
+			lastCheck = time.Now()
+		}
+		jobs, err := s.store.ListJobs(ctx, db.Name, 1)
+		if err != nil {
+			if ctx.Err() == nil {
+				s.log.Error("reading jobs for live updates", "database", db.Name, "err", err)
+			}
+			return
+		}
+		ev := jobEvent{Key: jobKey(jobs)}
+		if len(jobs) > 0 && jobs[0].Active() {
+			ev.Active, ev.Title, ev.Step, ev.Progress = true, jobTitle(jobs[0]), jobs[0].Step, jobs[0].Progress
+		}
+		b, _ := json.Marshal(ev)
+		switch {
+		case string(b) != last:
+			fmt.Fprintf(w, "data: %s\n\n", b)
+		case time.Since(lastWrite) > 15*time.Second:
+			// keeps proxies from closing an idle stream
+			fmt.Fprint(w, ": keepalive\n\n")
+		default:
+			b = nil
+		}
+		if b != nil {
+			if err := rc.Flush(); err != nil {
+				return
+			}
+			last, lastWrite = string(b), time.Now()
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 func (s *Server) saveSchedule(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +223,9 @@ func (s *Server) saveSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expr := strings.TrimSpace(r.PostForm.Get("cron"))
+	if preset, ok := r.PostForm["preset"]; ok && preset[0] != "custom" {
+		expr = preset[0]
+	}
 	if r.PostForm.Get("action") == "disable" || expr == "" {
 		if err := s.store.DeleteSchedule(r.Context(), db.Name); err != nil {
 			s.internalError(w, r, err)
@@ -146,20 +269,6 @@ func (s *Server) createSnapshot(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/databases/"+db.Name, http.StatusSeeOther)
 }
 
-type restoreData struct {
-	Snapshot store.Snapshot
-	Database store.Database
-}
-
-func (s *Server) restorePage(w http.ResponseWriter, r *http.Request) {
-	snap, db, err := s.authorizeSnapshot(r)
-	if err != nil {
-		s.userError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "restore", restoreData{Snapshot: *snap, Database: *db})
-}
-
 func (s *Server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	snap, db, err := s.authorizeSnapshot(r)
 	if err != nil {
@@ -192,7 +301,7 @@ func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	worker.RemoveFiles(s.cfg.SnapshotDir, []string{file}, s.log)
 	s.audit(r, "snapshot.delete", db.Name, fmt.Sprintf("snapshot=%d", snap.ID))
-	http.Redirect(w, r, "/databases/"+db.Name, http.StatusSeeOther)
+	http.Redirect(w, r, safeNext(r.PostForm.Get("next"), "/databases/"+db.Name), http.StatusSeeOther)
 }
 
 func (s *Server) downloadSnapshot(w http.ResponseWriter, r *http.Request) {

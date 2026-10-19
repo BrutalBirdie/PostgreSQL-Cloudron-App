@@ -37,6 +37,7 @@ type Config struct {
 	MaxSnapshots int
 	Mailer       *notify.Mailer // nil without the sendmail addon
 	Origin       string         // https://fqdn of the app, for links in mails
+	TuningFile   string         // include file of postgresql.conf with the admin's parameters
 }
 
 type Worker struct {

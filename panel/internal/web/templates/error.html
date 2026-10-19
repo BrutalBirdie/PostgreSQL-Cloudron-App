@@ -1,7 +1,7 @@
 {{define "content"}}
-<section>
+<section class="card form">
   <h1>Something went wrong</h1>
-  <p class="error">{{.Error}}</p>
-  <p><a href="/">Back to start</a></p>
+  <div class="callout danger">{{icon "triangle-alert"}}<span>{{.Error}}</span></div>
+  <div class="btns"><a class="ib with-label" href="/">{{icon "database"}}<span class="lbl">My databases</span></a></div>
 </section>
 {{end}}

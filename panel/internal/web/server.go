@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -78,8 +79,9 @@ type Server struct {
 func New(cfg Config, st *store.Store, log *slog.Logger) (*Server, error) {
 	s := &Server{cfg: cfg, store: st, log: log, pages: map[string]*template.Template{}, hashWake: make(chan struct{}, 1)}
 	funcs := template.FuncMap{"connURL": s.connURL, "bytes": humanBytes, "appPasswords": s.appPasswordsEnabled, "profileURL": func() string { return s.cfg.DashboardURL + "/#/profile" }, "appDomain": func() string { return s.cfg.PublicHost }}
-	for _, page := range []string{"login", "home", "admin", "secret", "audit", "error", "database", "restore", "uploads", "import", "role"} {
-		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
+	maps.Copy(funcs, viewFuncs)
+	for _, page := range []string{"login", "home", "admin", "secret", "error", "database", "uploads"} {
+		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/parts.html", "templates/icons.html", "templates/"+page+".html")
 		if err != nil {
 			return nil, err
 		}
@@ -98,30 +100,32 @@ func (s *Server) Handler() http.Handler {
 
 	mux.Handle("GET /{$}", s.requireLogin(s.home))
 	mux.Handle("POST /logout", s.requireLogin(s.logout))
+	mux.Handle("POST /account", s.requireLogin(s.saveAccount))
 	mux.Handle("POST /roles/{name}/password", s.requireLogin(s.setMyPassword))
 	mux.Handle("POST /roles/{name}/apppw", s.requireLogin(s.useAppPassword))
 	mux.Handle("POST /roles/{name}/databases", s.requireLogin(s.createOwnDatabase))
 	mux.Handle("POST /databases/{name}/delete", s.requireLogin(s.deleteDatabase))
 	mux.Handle("GET /databases/{name}", s.requireLogin(s.databasePage))
+	mux.Handle("GET /databases/{name}/events", s.requireLogin(s.databaseEvents))
 	mux.Handle("POST /databases/{name}/snapshots", s.requireLogin(s.createSnapshot))
 	mux.Handle("POST /databases/{name}/schedule", s.requireLogin(s.saveSchedule))
 	mux.Handle("GET /snapshots/{id}/download", s.requireLogin(s.downloadSnapshot))
-	mux.Handle("GET /snapshots/{id}/restore", s.requireLogin(s.restorePage))
 	mux.Handle("POST /snapshots/{id}/restore", s.requireLogin(s.restoreSnapshot))
 	mux.Handle("POST /snapshots/{id}/delete", s.requireLogin(s.deleteSnapshot))
 
+	mux.Handle("GET /uploads", s.requireLogin(s.uploadsStart))
 	mux.Handle("GET /roles/{name}/uploads", s.requireLogin(s.uploadsPage))
 	mux.Handle("POST /roles/{name}/uploads", s.requireLoginStream(s.uploadFile))
 	mux.Handle("POST /uploads/{id}/keep", s.requireLogin(s.keepUpload))
 	mux.Handle("POST /uploads/{id}/delete", s.requireLogin(s.deleteUpload))
 	mux.Handle("POST /uploads/{id}/verify", s.requireLogin(s.verifyUpload))
-	mux.Handle("GET /uploads/{id}/import", s.requireLogin(s.importPage))
 	mux.Handle("POST /uploads/{id}/import", s.requireLogin(s.importUpload))
 
 	mux.Handle("GET /admin", s.requireAdmin(s.admin))
-	mux.Handle("GET /admin/audit", s.requireAdmin(s.auditLog))
+	mux.Handle("GET /admin/{tab}", s.requireAdmin(s.admin))
 	mux.Handle("POST /admin/allowlist", s.requireAdmin(s.saveAllowlist))
 	mux.Handle("POST /admin/notifications", s.requireAdmin(s.saveNotifications))
+	mux.Handle("POST /admin/server", s.requireAdmin(s.saveServerParams))
 	mux.Handle("POST /admin/roles", s.requireAdmin(s.createRole))
 	mux.Handle("GET /admin/principals", s.requireAdmin(s.principals))
 	mux.Handle("GET /admin/roles/{name}", s.requireAdmin(s.rolePage))
@@ -136,7 +140,7 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		// wasm-unsafe-eval lets the vendored hash-wasm compile its WebAssembly, eval stays blocked
-		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
 		// no-referrer would make browsers send "Origin: null" on form posts
@@ -243,21 +247,40 @@ func (s *Server) rejectPost(r *http.Request, sess *store.Session, reason string)
 type pageData struct {
 	Title       string
 	Session     *store.Session
+	Prefs       store.Prefs
+	Nav         string // highlighted entry of the main navigation
+	Path        string // where the account sheet returns to
+	MailReady   bool
 	PGAdminPath string
 	Error       string
 	Data        any
 }
+
+// navOf maps a page to the main navigation entry it belongs to.
+var navOf = map[string]string{"home": "home", "database": "home", "secret": "home", "uploads": "uploads", "admin": "admin"}
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page string, data any) {
 	s.renderMsg(w, r, status, page, "", data)
 }
 
 func (s *Server) renderMsg(w http.ResponseWriter, r *http.Request, status int, page, msg string, data any) {
+	sess := sessionFrom(r)
+	var prefs store.Prefs
+	if sess != nil && s.store != nil {
+		var err error
+		if prefs, err = s.store.Prefs(r.Context(), sess.Username); err != nil {
+			s.log.Error("reading preferences", "user", sess.Username, "err", err)
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	err := s.pages[page].Execute(w, pageData{
 		Title:       "PostgreSQL",
-		Session:     sessionFrom(r),
+		Session:     sess,
+		Prefs:       prefs,
+		Nav:         navOf[page],
+		Path:        r.URL.Path,
+		MailReady:   s.cfg.Mailer != nil,
 		PGAdminPath: s.cfg.PGAdminPath,
 		Error:       msg,
 		Data:        data,

@@ -98,6 +98,9 @@ log_connections = 'authorization'
 log_min_error_statement = panic
 log_timezone = 'UTC'
 timezone = 'UTC'
+
+# parameters admins change in the panel, written by the worker - see panel/internal/tuning
+include_if_exists = '${PG_RUN_DIR}/tuning.conf'
 EOF
 # the snapshot worker runs as OS user postgres and dumps/restores as the database owner role
 printf 'panel   cloudron  pgpanel\nworker  postgres  +tenants\n' > "${PG_RUN_DIR}/pg_ident.conf"
@@ -123,6 +126,13 @@ END $$;
 ALTER ROLE pgpanel LOGIN NOSUPERUSER CREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
 -- roles created by pgpanel are granted back to it with SET, needed for CREATE DATABASE ... OWNER
 ALTER ROLE pgpanel SET createrole_self_grant = 'set';
+-- timeouts admins set for tenants in the panel must not cut off the panel, the worker or backups
+ALTER ROLE pgpanel SET statement_timeout = 0;
+ALTER ROLE pgpanel SET idle_in_transaction_session_timeout = 0;
+ALTER ROLE pgpanel SET idle_session_timeout = 0;
+ALTER ROLE postgres SET statement_timeout = 0;
+ALTER ROLE postgres SET idle_in_transaction_session_timeout = 0;
+ALTER ROLE postgres SET idle_session_timeout = 0;
 GRANT tenants TO pgpanel WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 -- members of apppw sign in with a Cloudron app password, see pg_hba.conf
 GRANT apppw TO pgpanel WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
@@ -144,6 +154,7 @@ GRANT EXECUTE ON FUNCTION pg_hba_file_rules() TO pgpanel;
 GRANT SELECT ON pg_hba_file_rules TO pgpanel;
 EOF
 pg_grant_tenants_to_panel
+gosu postgres /app/code/panel render-tuning --out "${PG_RUN_DIR}/tuning.conf"
 pg_stop_local
 
 echo "==> Starting supervisor"

@@ -1,71 +1,108 @@
 {{define "content"}}
 {{$csrf := .Session.CSRFToken}}
-{{$role := .Data.Role}}
-<p><a href="/">&larr; My databases</a></p>
-<h1>Uploads of role <code>{{$role.Name}}</code></h1>
-<p class="muted">Dump files to import into the databases of this role. Files are deleted {{.Data.KeepDays}} days after upload unless they are marked to keep.</p>
+{{$d := .Data}}{{$role := $d.Role}}
+<div class="page-head"><div><h1>Uploads</h1></div></div>
+{{if not $d.Roles}}
+<section class="card"><p>No database roles are assigned to you yet, so there is nothing to upload into.</p></section>
+{{else}}
+<nav class="pills" aria-label="Role">
+  {{range $d.Roles}}<a href="/roles/{{.}}/uploads" class="mono"{{if eq . $role.Name}} aria-current="page"{{end}}>{{.}}</a>{{end}}
+</nav>
 
 <section class="card">
-  <h2>Upload a dump</h2>
-  <form id="upload-form" method="post" action="/roles/{{$role.Name}}/uploads" enctype="multipart/form-data" class="grid">
+  <form id="upload-form" method="post" action="/roles/{{$role.Name}}/uploads" enctype="multipart/form-data" class="drop">
     <input type="hidden" name="csrf" value="{{$csrf}}">
-    <label>SHA-256 of the dump where it was created (optional)
-      <input type="text" name="sha256" spellcheck="false" autocomplete="off" placeholder="sha256sum prod.dump">
-    </label>
-    <input type="file" name="file" required aria-label="Dump file">
-    <button type="submit">Upload</button>
+    {{icon "upload"}}
+    <p><strong>Upload a dump file for <span class="mono">{{$role.Name}}</span></strong><br>
+    <span class="small muted">pg_dump --format=custom or --format=tar. Deleted {{$d.KeepDays}} days after upload unless kept.</span></p>
+    <details class="checksum">
+      <summary>{{icon "chevron-right"}}<span>Checksum from where the dump was made, optional</span></summary>
+      <label class="field"><span class="small muted">Output of <span class="mono">sha256sum</span> (Linux, macOS) or <span class="mono">Get-FileHash</span> (PowerShell). The server discards the file if it does not match.</span>
+        <input type="text" name="sha256" class="mono" spellcheck="false" autocomplete="off" placeholder="sha256sum prod.dump">
+      </label>
+    </details>
+    <!-- the server reads the checksum before the file, keep the file input last -->
+    <input type="file" name="file" id="upload-file" required aria-label="Dump file">
+    <button type="submit" class="ib primary with-label">{{icon "upload"}}<span class="lbl">Upload</span></button>
     <progress id="upload-progress" hidden></progress>
-    <p id="upload-status" class="muted" aria-live="polite"></p>
+    <p id="upload-status" class="small muted" aria-live="polite"></p>
   </form>
-  <p class="muted">Your browser calculates the SHA-256 of the file before uploading, the server checks it after the upload and discards the file on a mismatch.
-  The optional field also catches a dump that was damaged before it reached this computer: run <code>sha256sum</code> (Linux, macOS) or <code>Get-FileHash</code> (PowerShell) where the dump was made.</p>
-  <p class="muted">Use <code>pg_dump --format=custom</code> (or <code>--format=tar</code>). Plain SQL files cannot be imported on the server.
-  The page waits until the upload has finished. For very large files, an administrator can copy them with the Cloudron File Manager to <code>{{.Data.Dir}}/</code>, they show up here automatically.</p>
+  <p class="hint">Your browser calculates the SHA-256 of the file first, the server checks it after the upload.
+  For very large files, an administrator can copy them with the Cloudron File Manager to <span class="mono">{{$d.Dir}}/</span>, they show up here automatically.</p>
 </section>
 
 <section class="card">
-  <h2>Files</h2>
-  <table>
-    <thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th>Kept until</th><th>Actions</th></tr></thead>
-    <tbody>
-    {{range .Data.Uploads}}
-    <tr>
-      <td><code>{{.FileName}}</code>{{if .Format}} <span class="tag">{{.Format}}</span>{{end}}{{with .FormatErr}}<br><span class="error">{{.}}</span>{{end}}
-        <br><span class="muted">SHA-256 {{if .SHA256}}<code class="wrap">{{.SHA256}}</code>{{else}}being calculated{{end}}</span>
-        {{if eq .VerifiedBy "user"}}<span class="tag">matches your checksum</span>{{else if eq .VerifiedBy "browser"}}<span class="tag">matches browser checksum</span>{{else if .SHA256}}
-        <form method="post" action="/uploads/{{.ID}}/verify" class="inline">
+  <div class="sec-head"><h2>Files of <span class="mono">{{$role.Name}}</span></h2></div>
+  <ul class="list">
+    {{range $d.Uploads}}
+    <li><div class="row-main">
+        <div class="row-title"><span class="mono">{{.FileName}}</span>
+          {{if .Format}}<span class="chip">{{.Format}}</span>{{end}}
+          {{if eq .VerifiedBy "user"}}<span class="chip ok">{{icon "check"}} matches your checksum</span>{{else if eq .VerifiedBy "browser"}}<span class="chip ok">{{icon "check"}} checked</span>{{else if .SHA256}}<span class="chip">not compared</span>{{else}}<span class="chip">{{icon "clock"}} checksum pending</span>{{end}}
+          {{if .Keep}}<span class="chip accent">{{icon "pin"}} kept</span>{{end}}
+        </div>
+        <div class="row-sub">{{bytes .SizeBytes}} · {{utc .FirstSeen}} by {{.UploadedBy}}{{if not .Keep}} · deleted {{utc .Expires}}{{end}}</div>
+        {{with .FormatErr}}<div class="callout danger small">{{.}}</div>{{end}}
+      </div>
+      <div class="btns">
+        <button type="button" class="ib" popovertarget="sheet-import-{{.ID}}" aria-label="Import {{.FileName}}" data-tip="Import {{.FileName}}">{{icon "arrow-down-to-line"}}<span class="lbl">Import</span></button>
+        <form method="post" action="/uploads/{{.ID}}/keep">
           <input type="hidden" name="csrf" value="{{$csrf}}">
-          <input type="text" name="sha256" spellcheck="false" autocomplete="off" placeholder="your SHA-256" aria-label="Your SHA-256 of {{.FileName}}">
-          <button type="submit" class="secondary">Verify</button>
-        </form>{{end}}</td>
-      <td>{{bytes .SizeBytes}}</td>
-      <td>{{.FirstSeen.UTC.Format "2006-01-02 15:04"}} UTC<br><span class="muted">by {{.UploadedBy}}</span></td>
-      <td>{{if .Keep}}kept{{else}}{{.Expires.UTC.Format "2006-01-02 15:04"}} UTC{{end}}</td>
-      <td><div class="actions">
-        {{if and .Format $role.Databases}}
-        <form method="get" action="/uploads/{{.ID}}/import" class="inline">
-          <select name="database" aria-label="Target database">{{range $role.Databases}}<option value="{{.}}">{{.}}</option>{{end}}</select>
-          <button type="submit">Import</button>
+          <input type="hidden" name="keep" value="{{if .Keep}}0{{else}}1{{end}}">
+          <button type="submit" class="ib" aria-pressed="{{.Keep}}" aria-label="{{if .Keep}}Stop keeping{{else}}Keep, do not delete after {{$d.KeepDays}} days{{end}}" data-tip="{{if .Keep}}Stop keeping{{else}}Keep, do not delete after {{$d.KeepDays}} days{{end}}">{{icon "pin"}}<span class="lbl">Keep</span></button>
         </form>
-        {{end}}
-        <form method="post" action="/uploads/{{.ID}}/keep" class="inline">
+        <form method="post" action="/uploads/{{.ID}}/delete">
           <input type="hidden" name="csrf" value="{{$csrf}}">
-          {{if .Keep}}<input type="hidden" name="keep" value="0"><button type="submit" class="secondary">Do not keep</button>
-          {{else}}<input type="hidden" name="keep" value="1"><button type="submit" class="secondary">Keep</button>{{end}}
+          <button type="submit" class="ib danger" aria-label="Delete {{.FileName}}" data-tip="Delete {{.FileName}}">{{icon "trash-2"}}<span class="lbl">Delete</span></button>
         </form>
-        <form method="post" action="/uploads/{{.ID}}/delete" class="inline">
-          <input type="hidden" name="csrf" value="{{$csrf}}">
-          <button type="submit" class="secondary">Delete</button>
-        </form>
-      </div></td>
-    </tr>
+      </div>
+    </li>
     {{else}}
-    <tr><td colspan="5">No files.</td></tr>
+    <li><span class="muted">No files.</span></li>
     {{end}}
-    </tbody>
-  </table>
-  {{if not $role.Databases}}<p class="muted">This role has no database to import into.</p>{{end}}
+  </ul>
 </section>
+
+{{range $d.Uploads}}
+{{$id := print "sheet-import-" .ID}}
+<div popover id="{{$id}}" class="sheet" aria-labelledby="{{$id}}-title">
+  {{template "sheethead" (dict "ID" $id "Icon" "arrow-down-to-line" "Title" "Import" "Name" .FileName)}}
+  <div class="sheet-body">
+    <section>
+      <p class="small">{{bytes .SizeBytes}}{{with .Format}}, {{.}} format{{end}}</p>
+      <p class="small">SHA-256 {{if .SHA256}}<span class="mono wrap">{{.SHA256}}</span>{{else}}is being calculated{{end}}</p>
+      {{if eq .VerifiedBy "user"}}<p class="small">Matches your checksum.</p>{{else if eq .VerifiedBy "browser"}}<p class="small">Matches the checksum your browser calculated.</p>
+      {{else if .SHA256}}
+      <form method="post" action="/uploads/{{.ID}}/verify" class="form">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <label class="field"><span>Compare with your checksum</span><input type="text" name="sha256" class="mono" spellcheck="false" autocomplete="off" placeholder="your SHA-256"></label>
+        <div class="btns"><button type="submit" class="ib with-label">{{icon "check"}}<span class="lbl">Compare</span></button></div>
+      </form>
+      {{end}}
+    </section>
+    <section>
+      {{if .FormatErr}}<div class="callout danger">{{icon "triangle-alert"}}<span>{{.FormatErr}}</span></div>
+      {{else if not $role.Databases}}<p class="muted">This role has no database to import into.</p>
+      {{else}}
+      <form method="post" action="/uploads/{{.ID}}/import" class="form">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <label class="field"><span>Into database</span>
+          <select name="database">{{range $role.Databases}}<option value="{{.}}">{{.}}</option>{{end}}</select>
+        </label>
+        <label class="switch-row"><span>Take a snapshot of the current data first<small>Lets you go back.</small></span><input type="checkbox" class="switch" name="safety_snapshot" checked></label>
+        <label class="switch-row"><span>All or nothing<small>Stops at the first error. Off skips failing statements, for example extensions that are not allowed, and loads the rest.</small></span><input type="checkbox" class="switch" name="strict" checked></label>
+        <div class="callout warn">{{icon "triangle-alert"}}<span>Replaces all data in the target database and disconnects its clients. Ownership and privileges in the file are ignored, everything belongs to role <span class="mono">{{$role.Name}}</span>.</span></div>
+        <label class="field"><span class="small">Type the target database name to confirm</span>
+          <input type="text" name="confirm" class="mono" required autocomplete="off" spellcheck="false">
+        </label>
+        <div class="btns"><button type="submit" class="ib danger solid with-label">{{icon "arrow-down-to-line"}}<span class="lbl">Import</span></button></div>
+      </form>
+      {{end}}
+    </section>
+  </div>
+</div>
+{{end}}
 <script src="/static/vendor/hash-wasm-sha256-4.12.0.umd.min.js"></script>
 <script src="/static/upload.js"></script>
+{{end}}
 {{end}}

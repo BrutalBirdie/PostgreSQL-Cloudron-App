@@ -219,6 +219,12 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	return err
 }
 
+// TakeSetting reports whether a flag setting was set and clears it.
+func (s *Store) TakeSetting(ctx context.Context, key string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM settings WHERE key = $1`, key)
+	return tag.RowsAffected() > 0, err
+}
+
 // TakeAccessSyncRequest reports and clears a pending request.
 func (s *Store) TakeAccessSyncRequest(ctx context.Context) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM settings WHERE key = 'access_sync_requested'`)

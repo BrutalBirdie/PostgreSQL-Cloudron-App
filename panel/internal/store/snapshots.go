@@ -184,6 +184,14 @@ func (s *Store) ListSnapshots(ctx context.Context, database string) ([]Snapshot,
 	return pgx.CollectRows(rows, scanSnapshot)
 }
 
+func (s *Store) ListAllSnapshots(ctx context.Context) ([]Snapshot, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+snapshotColumns+` FROM snapshots ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanSnapshot)
+}
+
 func (s *Store) GetSnapshot(ctx context.Context, id int64) (*Snapshot, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+snapshotColumns+` FROM snapshots WHERE id = $1`, id)
 	if err != nil {

@@ -98,6 +98,16 @@ RETURNING username, display_name, is_admin, csrf_token`,
 	return &sess, err
 }
 
+// SessionValid checks a session without counting it as activity, for long
+// running requests.
+func (s *Store) SessionValid(ctx context.Context, token string, idle, absolute time.Duration) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `
+SELECT EXISTS (SELECT FROM sessions WHERE id_hash = $1 AND last_seen_at > now() - $2 * interval '1 second' AND created_at > now() - $3 * interval '1 second')`,
+		hash(token), int(idle.Seconds()), int(absolute.Seconds())).Scan(&ok)
+	return ok, err
+}
+
 func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE id_hash = $1`, hash(token))
 	return err

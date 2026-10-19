@@ -11,6 +11,7 @@ import (
 	"pgpanel/internal/hba"
 	"pgpanel/internal/notify"
 	"pgpanel/internal/store"
+	"pgpanel/internal/tuning"
 	"pgpanel/internal/worker"
 )
 
@@ -45,20 +46,61 @@ func (s *Server) deleteDatabase(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.afterDelete(r, db), http.StatusSeeOther)
 }
 
+type adminTab struct{ ID, Label, Icon string }
+
+var adminTabs = []adminTab{{"overview", "Overview", "layout-dashboard"}, {"roles", "Roles", "users"}, {"databases", "Databases", "database"},
+	{"network", "Network", "globe"}, {"notifications", "Notifications", "mail"}, {"server", "Server", "server"}, {"audit", "Audit log", "list"}}
+
+// adminViews maps every admin page to the tab it belongs to. Connections and
+// snapshots open from the overview tiles.
+var adminViews = map[string]string{"overview": "overview", "connections": "overview", "snapshots": "overview", "roles": "roles",
+	"databases": "databases", "network": "network", "notifications": "notifications", "server": "server", "audit": "audit"}
+
+type filterOption struct {
+	Value, Label string
+	Mono         bool
+}
+
+type paramView struct {
+	Name, Value, Running, Default, Range, Help string
+	Restart, Pending                         bool
+}
+
 type adminData struct {
-	Roles     []store.Role
-	Databases []store.Database
-	Allowlist string
-	Stats     map[string]store.DatabaseStats
-	Total     store.DatabaseStats
-	Disk      *diskUsage // nil when the volume cannot be read
-	NotifyTo  string
-	MailReady bool
-	TestSent  bool
+	View, Tab      string
+	Tabs           []adminTab
+	Roles          []roleSheet
+	Databases      []store.Database
+	Stats          map[string]store.DatabaseStats
+	Total          store.DatabaseStats
+	Disk           *diskUsage // nil when the volume cannot be read
+	MaxConnections string
+	Allowlist      string
+	ClientIP       string
+	NotifyTo       string
+	MailReady      bool
+	TestSent       bool
+	OptIns         int
+	Params         []paramView
+	ParamsApplying bool
+	ParamsError    string
+	RestartPending bool
+	Connections    []store.Connection
+	Snapshots      []store.Snapshot
+	Filter         string
+	Filters        []filterOption
+	Audit          []store.AuditEntry
 }
 
 type diskUsage struct {
 	Used, Size int64
+}
+
+func (d diskUsage) Percent() int {
+	if d.Size == 0 {
+		return 0
+	}
+	return int(d.Used * 100 / d.Size)
 }
 
 func diskUsageOf(path string) (*diskUsage, error) {
@@ -71,48 +113,208 @@ func diskUsageOf(path string) (*diskUsage, error) {
 }
 
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
+	view := r.PathValue("tab")
+	if view == "" {
+		view = "overview"
+	}
+	tab, ok := adminViews[view]
+	if !ok {
+		s.userError(w, r, store.ErrNotFound)
+		return
+	}
+	d := adminData{View: view, Tab: tab, Tabs: adminTabs, Filter: r.URL.Query().Get("f")}
+	if err := s.loadAdmin(r, &d); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.render(w, r, http.StatusOK, "admin", d)
+}
+
+func (s *Server) loadAdmin(r *http.Request, d *adminData) error {
 	ctx := r.Context()
-	roles, err := s.store.ListRoles(ctx)
+	var err error
+	switch d.View {
+	case "overview":
+		if d.Stats, err = s.store.DatabaseStats(ctx, ""); err != nil {
+			return err
+		}
+		for _, st := range d.Stats {
+			d.Total.SizeBytes += st.SizeBytes
+			d.Total.Connections += st.Connections
+			d.Total.Snapshots += st.Snapshots
+			d.Total.SnapshotBytes += st.SnapshotBytes
+		}
+		if d.Disk, err = diskUsageOf(s.cfg.SnapshotDir); err != nil {
+			s.log.Warn("reading disk usage", "err", err)
+		}
+		set, err := s.store.ServerSettings(ctx, []string{"max_connections"})
+		if err != nil {
+			return err
+		}
+		d.MaxConnections = set["max_connections"].Value
+	case "connections":
+		if d.Connections, err = s.store.Connections(ctx); err != nil {
+			return err
+		}
+		seen := map[string]bool{}
+		d.Filters = []filterOption{{"", "All databases", false}}
+		var shown []store.Connection
+		for _, c := range d.Connections {
+			if !seen[c.Database] {
+				seen[c.Database] = true
+				d.Filters = append(d.Filters, filterOption{c.Database, c.Database, true})
+			}
+			if d.Filter == "" || d.Filter == c.Database {
+				shown = append(shown, c)
+			}
+		}
+		d.Total.Connections = len(d.Connections)
+		d.Connections = shown
+		set, err := s.store.ServerSettings(ctx, []string{"max_connections"})
+		if err != nil {
+			return err
+		}
+		d.MaxConnections = set["max_connections"].Value
+	case "snapshots":
+		all, err := s.store.ListAllSnapshots(ctx)
+		if err != nil {
+			return err
+		}
+		d.Filters = []filterOption{{"", "All", false}, {store.KindManual, "Manual", false}, {store.KindScheduled, "Scheduled", false}, {store.KindPreRestore, "Before restore", false}}
+		seen := map[string]bool{}
+		for _, sn := range all {
+			d.Total.Snapshots++
+			d.Total.SnapshotBytes += sn.SizeBytes
+			if !seen[sn.Database] {
+				seen[sn.Database] = true
+				d.Filters = append(d.Filters, filterOption{"db:" + sn.Database, sn.Database, true})
+			}
+			if d.Filter == "" || d.Filter == sn.Kind || d.Filter == "db:"+sn.Database {
+				d.Snapshots = append(d.Snapshots, sn)
+			}
+		}
+	case "roles":
+		roles, err := s.store.ListRoles(ctx)
+		if err != nil {
+			return err
+		}
+		for _, role := range roles {
+			sheet, err := s.roleSheet(r, role, true)
+			if err != nil {
+				return err
+			}
+			d.Roles = append(d.Roles, sheet)
+		}
+	case "databases":
+		if d.Databases, err = s.store.ListDatabases(ctx); err != nil {
+			return err
+		}
+		if d.Stats, err = s.store.DatabaseStats(ctx, ""); err != nil {
+			return err
+		}
+		roles, err := s.store.ListRoles(ctx)
+		if err != nil {
+			return err
+		}
+		for _, role := range roles {
+			d.Roles = append(d.Roles, roleSheet{Role: role})
+		}
+	case "network":
+		list, errs := hba.ReadFile(s.cfg.AllowlistFile)
+		for _, e := range errs {
+			s.log.Warn("allowlist", "err", e)
+		}
+		var b strings.Builder
+		for _, p := range list {
+			b.WriteString(p.String() + "\n")
+		}
+		d.Allowlist = b.String()
+		ip, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ",")
+		if a, err := netip.ParseAddr(strings.TrimSpace(ip)); err == nil {
+			d.ClientIP = a.Unmap().String()
+		}
+	case "notifications":
+		if d.NotifyTo, err = s.store.Setting(ctx, worker.SettingNotifyTo); err != nil {
+			return err
+		}
+		optIns, err := s.store.NotifyOptIns(ctx)
+		if err != nil {
+			return err
+		}
+		d.OptIns = len(optIns)
+		d.MailReady, d.TestSent = s.cfg.Mailer != nil, r.URL.Query().Get("mail") == "sent"
+	case "server":
+		return s.loadParams(ctx, d)
+	case "audit":
+		if d.Audit, err = s.store.ListAudit(ctx, 500); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) loadParams(ctx context.Context, d *adminData) error {
+	raw, err := s.store.Setting(ctx, worker.SettingTuning)
 	if err != nil {
+		return err
+	}
+	stored, err := tuning.Decode(raw)
+	if err != nil {
+		return err
+	}
+	running, err := s.store.ServerSettings(ctx, tuning.Names())
+	if err != nil {
+		return err
+	}
+	requested, err := s.store.Setting(ctx, worker.SettingTuningRequested)
+	if err != nil {
+		return err
+	}
+	if d.ParamsError, err = s.store.Setting(ctx, worker.SettingTuningError); err != nil {
+		return err
+	}
+	d.ParamsApplying = requested != ""
+	mem := tuning.MemoryMB()
+	for _, p := range tuning.Params {
+		run := running[p.Name]
+		d.Params = append(d.Params, paramView{Name: p.Name, Value: stored[p.Name], Running: run.Value, Default: p.Default(mem),
+			Range: p.Range(mem), Help: p.Help, Restart: p.Restart, Pending: run.PendingRestart})
+		d.RestartPending = d.RestartPending || run.PendingRestart
+	}
+	return nil
+}
+
+// saveServerParams validates the parameters and asks the worker to apply them.
+func (s *Server) saveServerParams(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	values := map[string]string{}
+	for _, p := range tuning.Params {
+		values[p.Name] = r.PostForm.Get(p.Name)
+	}
+	clean, errs := tuning.Validate(values, tuning.MemoryMB())
+	if len(errs) > 0 {
+		msgs := make([]string, len(errs))
+		for i, e := range errs {
+			msgs[i] = e.Error()
+		}
+		s.userError(w, r, badInput("Nothing saved. "+strings.Join(msgs, ". ")+"."))
+		return
+	}
+	encoded := tuning.Encode(clean)
+	if err := s.store.SetSetting(ctx, worker.SettingTuning, encoded); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	dbs, err := s.store.ListDatabases(ctx)
-	if err != nil {
+	if err := s.store.SetSetting(ctx, worker.SettingTuningError, ""); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	list, errs := hba.ReadFile(s.cfg.AllowlistFile)
-	for _, e := range errs {
-		s.log.Warn("allowlist", "err", e)
-	}
-	var b strings.Builder
-	for _, p := range list {
-		b.WriteString(p.String() + "\n")
-	}
-	stats, err := s.store.DatabaseStats(ctx, "")
-	if err != nil {
+	if err := s.store.SetSetting(ctx, worker.SettingTuningRequested, "1"); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	var total store.DatabaseStats
-	for _, st := range stats {
-		total.SizeBytes += st.SizeBytes
-		total.Connections += st.Connections
-		total.Snapshots += st.Snapshots
-		total.SnapshotBytes += st.SnapshotBytes
-	}
-	disk, err := diskUsageOf(s.cfg.SnapshotDir)
-	if err != nil {
-		s.log.Warn("reading disk usage", "err", err)
-	}
-	notifyTo, err := s.store.Setting(ctx, worker.SettingNotifyTo)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "admin", adminData{Roles: roles, Databases: dbs, Allowlist: b.String(), Stats: stats, Total: total, Disk: disk,
-		NotifyTo: notifyTo, MailReady: s.cfg.Mailer != nil, TestSent: r.URL.Query().Get("mail") == "sent"})
+	s.audit(r, "server.params", "postgresql.conf", encoded)
+	http.Redirect(w, r, "/admin/server", http.StatusSeeOther)
 }
 
 // saveNotifications stores the admin addresses for failure mails, or sends a
@@ -136,7 +338,7 @@ func (s *Server) saveNotifications(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.audit(r, "notify.test", "mail", value)
-		http.Redirect(w, r, "/admin?mail=sent#notifications", http.StatusSeeOther)
+		http.Redirect(w, r, "/admin/notifications?mail=sent", http.StatusSeeOther)
 		return
 	}
 	if err := s.store.SetSetting(ctx, worker.SettingNotifyTo, value); err != nil {
@@ -144,16 +346,7 @@ func (s *Server) saveNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "notify.update", "mail", value)
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func (s *Server) auditLog(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.store.ListAudit(r.Context(), 500)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "audit", entries)
+	http.Redirect(w, r, "/admin/notifications", http.StatusSeeOther)
 }
 
 func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +357,7 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "database.create", name, "owner="+owner)
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/databases", http.StatusSeeOther)
 }
 
 // saveAllowlist validates every entry, writes the allowlist and pg_hba.conf, and
@@ -201,7 +394,7 @@ func (s *Server) saveAllowlist(w http.ResponseWriter, r *http.Request) {
 		entries[i] = p.String()
 	}
 	s.audit(r, "allowlist.update", "pg_hba", strings.Join(entries, " "))
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/network", http.StatusSeeOther)
 }
 
 func (s *Server) applyAllowlist(ctx context.Context, list []netip.Prefix) error {

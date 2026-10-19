@@ -57,7 +57,8 @@
   "mediaLinks": [
     "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/screenshots/databases.png?raw=true",
     "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/screenshots/database.png?raw=true",
-    "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/screenshots/admin.png?raw=true"
+    "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/screenshots/admin.png?raw=true",
+    "https://github.com/BrutalBirdie/PostgreSQL-Cloudron-App/blob/master/screenshots/database-phone.png?raw=true"
   ],
   "contactEmail": "support@cloudron.io",
   "packageUrl": "https://git.cloudron.io/playground/postgresql-app"

@@ -1,122 +1,93 @@
 {{define "content"}}
 {{$csrf := .Session.CSRFToken}}
-{{$db := .Data.Database}}
-{{if .Data.Busy}}<meta http-equiv="refresh" content="5">{{end}}
-<p><a href="/">&larr; My databases</a></p>
-<h1>Database <code>{{$db.Name}}</code></h1>
-<p class="muted">Owned by role <code>{{$db.Owner}}</code>. The newest {{.Data.MaxSnapshots}} manual, {{.Data.MaxSnapshots}} scheduled and {{.Data.MaxSnapshots}} before-restore snapshots are kept, the oldest of each type are deleted automatically.
-Snapshots are stored on this server and are not part of Cloudron backups.</p>
-
-<section class="card">
-  <h2>Usage</h2>
-  {{with .Data.Stats}}
-  <dl>
-    <dt>Database size</dt><dd>{{bytes .SizeBytes}}</dd>
-    <dt>Open connections</dt><dd>{{.Connections}}</dd>
-    <dt>Snapshots</dt><dd>{{.Snapshots}}, {{bytes .SnapshotBytes}} in total</dd>
-    <dt>Latest snapshot</dt><dd>{{with .LastSnapshot}}{{.UTC.Format "2006-01-02 15:04"}} UTC{{else}}<span class="muted">none</span>{{end}}</dd>
-  </dl>
-  {{end}}
-</section>
-
-<section class="card">
-  <h2>Automatic snapshots</h2>
-  {{with .Data.Schedule}}
-  <p>Schedule <code>{{.Cron}}</code> (UTC). Next run: {{.NextRun.UTC.Format "2006-01-02 15:04"}} UTC.</p>
-  {{else}}
-  <p class="muted">No automatic snapshots.</p>
-  {{end}}
-  <form method="post" action="/databases/{{$db.Name}}/schedule" class="inline">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
-    <input type="text" name="cron" value="{{with .Data.Schedule}}{{.Cron}}{{end}}" placeholder="0 3 * * *" list="cron-presets" spellcheck="false" autocomplete="off" aria-label="Cron schedule in UTC">
-    <datalist id="cron-presets">
-      <option value="0 * * * *">every hour</option>
-      <option value="0 */6 * * *">every 6 hours</option>
-      <option value="0 3 * * *">daily at 03:00 UTC</option>
-      <option value="0 3 * * 0">weekly, Sunday 03:00 UTC</option>
-    </datalist>
-    <button type="submit" name="action" value="save">Save schedule</button>
-    {{if .Data.Schedule}}<button type="submit" name="action" value="disable" class="secondary" formnovalidate>Turn off</button>{{end}}
-  </form>
-  <p class="muted">Cron format <code>minute hour day month weekday</code>, in UTC, at most once per hour. Examples: <code>0 3 * * *</code> daily at 03:00, <code>0 */6 * * *</code> every 6 hours.</p>
-</section>
-
-<section class="card">
-  <h2>Snapshots</h2>
-  {{if .Data.Busy}}
-  {{with index .Data.Jobs 0}}
-  <div class="warning job-progress">
-    <strong>{{if .Scheduled}}Scheduled {{end}}{{.Kind}} running{{with .StartedAt}} since {{.UTC.Format "15:04:05"}} UTC{{end}}.</strong>
-    {{if .Step}}<span>{{.Step}}{{with .Progress}} ({{.}}%){{end}}</span>{{else}}<span>Waiting for the worker.</span>{{end}}
-    {{with .Progress}}<progress max="100" value="{{.}}">{{.}}%</progress>{{end}}
-    <span class="muted">This page reloads every 5 seconds.</span>
-  </div>
-  {{end}}
-  {{else}}
-  <form method="post" action="/databases/{{$db.Name}}/snapshots">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
-    <button type="submit">Create snapshot now</button>
-  </form>
-  {{end}}
-  <table>
-    <thead><tr><th>#</th><th>Created (UTC)</th><th>Size</th><th>By</th><th>Actions</th></tr></thead>
-    <tbody>
-    {{range .Data.Snapshots}}
-    <tr>
-      <td>{{.ID}}</td>
-      <td>{{.CreatedAt.UTC.Format "2006-01-02 15:04:05"}} <span class="tag">{{if eq .Kind "scheduled"}}scheduled{{else if eq .Kind "pre_restore"}}before restore{{else}}manual{{end}}</span>{{with .Note}}<br><span class="muted">{{.}}</span>{{end}}</td>
-      <td>{{bytes .SizeBytes}}</td>
-      <td>{{.CreatedBy}}</td>
-      <td><div class="actions">
-        <a class="button secondary" href="/snapshots/{{.ID}}/download?format=dump">Download .dump</a>
-        <a class="button secondary" href="/snapshots/{{.ID}}/download?format=sql">Download .sql</a>
-        {{if not $.Data.Busy}}<a class="button" href="/snapshots/{{.ID}}/restore">Restore</a>{{end}}
-        <form method="post" action="/snapshots/{{.ID}}/delete" class="inline">
-          <input type="hidden" name="csrf" value="{{$csrf}}">
-          <button type="submit" class="secondary">Delete</button>
-        </form>
-      </div></td>
-    </tr>
-    {{else}}
-    <tr><td colspan="5">No snapshots yet.</td></tr>
-    {{end}}
-    </tbody>
-  </table>
-  <p class="muted">To load a dump file into this database, use <a href="/roles/{{$db.Owner}}/uploads">uploads and import</a>.
-  Restore a <code>.dump</code> elsewhere with <code>pg_restore --no-owner --no-acl -d &lt;database&gt; file.dump</code> (pg_restore 17 or newer).</p>
-</section>
-
-{{if .Data.Jobs}}
-<section class="card">
-  <h2>Recent jobs</h2>
-  <table>
-    <thead><tr><th>Started (UTC)</th><th>Job</th><th>By</th><th>Status</th></tr></thead>
-    <tbody>
-    {{range .Data.Jobs}}
-    <tr>
-      <td>{{.CreatedAt.UTC.Format "2006-01-02 15:04:05"}}</td>
-      <td>{{if .Scheduled}}scheduled {{end}}{{.Kind}}{{with .SnapshotID}} of #{{.}}{{end}}{{if and (eq .Kind "import") (not .Strict)}} (skip errors){{end}}{{if and (or (eq .Kind "import") (eq .Kind "restore")) (not .Safety)}} (without safety snapshot){{end}}</td>
-      <td>{{.RequestedBy}}</td>
-      <td>{{.Status}}{{if .Active}}{{with .Step}}<br><span class="muted">{{.}}</span>{{end}}{{with .Progress}} {{.}}%{{end}}{{end}}{{with .Error}}<br><span class="error">{{.}}</span>{{end}}</td>
-    </tr>
-    {{end}}
-    </tbody>
-  </table>
-</section>
-{{end}}
-
-<section class="card danger-zone">
-  <h2>Danger zone</h2>
-  <div class="danger-row">
-    <div>
-      <strong>Delete this database</strong>
-      <p class="muted">Deletes <code>{{$db.Name}}</code>, disconnects its clients and removes all its snapshots. This cannot be undone.</p>
-    </div>
-    <form method="post" action="/databases/{{$db.Name}}/delete" class="inline">
+{{$d := .Data}}{{$db := $d.Database}}
+<a class="back" href="{{$d.Back}}">{{icon "arrow-left"}} {{$d.BackLabel}}</a>
+<div class="page-head">
+  <div><span class="eyebrow">Database</span><h1 class="mono">{{$db.Name}}</h1><p class="small muted">Owned by role <span class="mono">{{$db.Owner}}</span></p></div>
+  <div class="btns" data-live="actions">
+    <form method="post" action="/databases/{{$db.Name}}/snapshots">
       <input type="hidden" name="csrf" value="{{$csrf}}">
-      <input type="text" name="confirm" placeholder="type {{$db.Name}} to confirm" required autocomplete="off" aria-label="Type {{$db.Name}} to confirm deletion">
-      <button type="submit" class="danger">Delete database</button>
+      <button type="submit" class="ib primary with-label"{{if $d.Active}} disabled{{end}}>{{icon "camera"}}<span class="lbl">Snapshot now</span></button>
     </form>
+    <button type="button" class="ib" popovertarget="sheet-db" aria-label="Schedule and database settings" data-tip="Schedule and database settings">{{icon "settings"}}<span class="lbl">Settings</span></button>
   </div>
+</div>
+
+<div class="tiles" data-live="tiles">
+  {{with $d.Stats}}
+  <div class="tile"><span class="k">{{icon "hard-drive"}} Size</span><span class="v">{{bytes .SizeBytes}}</span></div>
+  <div class="tile"><span class="k">{{icon "plug"}} Connections</span><span class="v">{{.Connections}}</span><span class="s">up to {{$d.Role.ConnLimit}} per login</span></div>
+  <div class="tile"><span class="k">{{icon "camera"}} Snapshots</span><span class="v">{{.Snapshots}}</span><span class="s">{{if .Snapshots}}{{bytes .SnapshotBytes}} in total{{else}}none yet{{end}}</span></div>
+  {{end}}
+  <div class="tile"><span class="k">{{icon "clock"}} Next snapshot</span>{{with $d.Schedule}}<span class="v">{{.NextRun.UTC.Format "15:04"}}</span><span class="s">{{.NextRun.UTC.Format "2006-01-02"}} UTC</span>{{else}}<span class="v">Off</span><span class="s">no schedule</span>{{end}}</div>
+</div>
+
+{{with $d.URL}}{{template "copybox" (dict "Text" . "Label" "Copy connection URL")}}{{end}}
+
+<div id="job-slot" data-live="job" data-key="{{$d.JobKey}}">{{with $d.Active}}{{template "jobcard" .}}{{end}}</div>
+
+<section class="card" data-live="snapshots">
+  <div class="sec-head"><h2>Snapshots</h2><span class="small muted">The newest {{$d.MaxSnapshots}} of each type are kept. Stored on this server, not part of Cloudron backups.</span></div>
+  <ul class="list">
+    {{range $d.Snapshots}}{{template "snaprow" (dict "S" . "Busy" $d.Active "ShowDB" false)}}{{else}}
+    <li><span class="muted">No snapshots yet.</span></li>
+    {{end}}
+  </ul>
+  {{range $d.Snapshots}}{{template "snapsheets" (dict "S" . "CSRF" $csrf "Next" "")}}{{end}}
 </section>
+
+<section class="card" data-live="jobs">
+  <details{{with $d.Jobs}}{{if eq (index . 0).Status "failed"}} open{{end}}{{end}}>
+    <summary>{{icon "chevron-right"}}<h2>Recent jobs</h2></summary>
+    <ul class="list">
+      {{range $d.Jobs}}{{$failed := eq .Status "failed"}}
+      <li><div class="row-main">
+          <div class="row-title">{{jobTitle .}}{{if and (eq .Kind "import") (not .Strict)}} (skip errors){{end}}{{if and (ne .Kind "snapshot") (not .Safety)}} (without safety snapshot){{end}}
+            {{if eq .Status "failed"}}<span class="chip danger">{{icon "triangle-alert"}} failed</span>{{else if eq .Status "done"}}<span class="chip ok">{{icon "check"}} done</span>{{else}}<span class="chip accent">{{icon "clock"}} {{.Status}}</span>{{end}}</div>
+          <div class="row-sub">{{utc .CreatedAt}} · by {{.RequestedBy}}</div>
+          {{with .Error}}<div class="callout {{if $failed}}danger{{else}}warn{{end}} small mono">{{.}}</div>{{end}}
+        </div></li>
+      {{else}}
+      <li><span class="muted">No jobs yet.</span></li>
+      {{end}}
+    </ul>
+  </details>
+</section>
+
+<div popover id="sheet-db" class="sheet" aria-labelledby="sheet-db-title">
+  {{template "sheethead" (dict "ID" "sheet-db" "Icon" "settings" "Title" "Database" "Name" $db.Name)}}
+  <div class="sheet-body">
+    <section>
+      <span class="eyebrow">Automatic snapshots</span>
+      <form method="post" action="/databases/{{$db.Name}}/schedule" class="form" data-schedule>
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <div class="presets" role="radiogroup" aria-label="Schedule">
+          {{range $d.Presets}}<label><input type="radio" name="preset" value="{{.Cron}}"{{if eq .Cron $d.Preset}} checked{{end}}>{{.Label}}</label>{{end}}
+          <label><input type="radio" name="preset" value="custom"{{if eq $d.Preset "custom"}} checked{{end}}>Custom</label>
+        </div>
+        <label class="field"><span>Cron expression, used with Custom</span>
+          <input type="text" name="cron" class="mono" value="{{with $d.Schedule}}{{.Cron}}{{end}}" placeholder="0 3 * * *" spellcheck="false" autocomplete="off">
+          <span class="help">minute hour day month weekday, in UTC, at most once per hour.{{with $d.Schedule}} Next run {{utc .NextRun}}.{{end}}</span>
+        </label>
+        <div class="btns"><button type="submit" class="ib primary with-label">{{icon "save"}}<span class="lbl">Save schedule</span></button></div>
+      </form>
+    </section>
+    <section>
+      <span class="eyebrow">Load a dump</span>
+      <p class="small">Upload a dump file on the <a href="/roles/{{$db.Owner}}/uploads">uploads page</a> and import it from there.</p>
+    </section>
+    <section>
+      <div class="danger-box">
+        <h3>{{icon "trash-2"}} Delete database</h3>
+        <p class="small">Deletes <span class="mono">{{$db.Name}}</span>, disconnects its clients and removes all its snapshots. This cannot be undone.</p>
+        <form method="post" action="/databases/{{$db.Name}}/delete" class="form">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          {{template "confirmfield" $db.Name}}
+          <div class="btns"><button type="submit" class="ib danger solid with-label needs-confirm">{{icon "trash-2"}}<span class="lbl">Delete database</span></button></div>
+        </form>
+      </div>
+    </section>
+  </div>
+</div>
+<script src="/static/live.js" data-events="/databases/{{$db.Name}}/events"></script>
 {{end}}

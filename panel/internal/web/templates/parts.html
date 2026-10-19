@@ -1,0 +1,217 @@
+{{define "navlinks"}}
+<a href="/"{{if eq .Nav "home"}} aria-current="page"{{end}}>{{icon "database"}}<span>Databases</span></a>
+<a href="/uploads"{{if eq .Nav "uploads"}} aria-current="page"{{end}}>{{icon "upload"}}<span>Uploads</span></a>
+{{if .Session.IsAdmin}}<a href="/admin"{{if eq .Nav "admin"}} aria-current="page"{{end}}>{{icon "shield"}}<span>Admin</span></a>{{end}}
+{{end}}
+
+{{define "sheethead"}}
+<div class="sheet-head">
+  {{icon .Icon}}
+  <h2 id="{{.ID}}-title">{{.Title}}{{with .Name}} <span class="mono">{{.}}</span>{{end}}</h2>
+  <button type="button" class="ib quiet" popovertarget="{{.ID}}" popovertargetaction="hide" aria-label="Close" data-tip="Close">{{icon "x"}}<span class="lbl">Close</span></button>
+</div>
+{{end}}
+
+{{define "copybox"}}
+<div class="url"><code>{{.Text}}</code><button type="button" class="ib quiet copy" data-copy="{{.Text}}" aria-label="{{.Label}}" data-tip="{{.Label}}" hidden>{{icon "copy"}}<span class="lbl">Copy</span></button></div>
+{{end}}
+
+{{define "confirmfield"}}
+<label class="field"><span class="small">Type <span class="mono">{{.}}</span> to confirm</span>
+  <input type="text" name="confirm" class="mono" required pattern="{{.}}" data-confirm="{{.}}" autocomplete="off" spellcheck="false">
+</label>
+{{end}}
+
+{{define "rolesheet"}}
+{{$r := .R}}{{$csrf := .CSRF}}{{$id := print "sheet-role-" $r.Name}}
+<div popover id="{{$id}}" class="sheet" aria-labelledby="{{$id}}-title">
+  {{template "sheethead" (dict "ID" $id "Icon" "settings" "Title" "Role" "Name" $r.Name)}}
+  <div class="sheet-body">
+    {{if $r.Mine}}
+    <section>
+      <span class="eyebrow">Your login</span>
+      {{with $r.Login}}
+      {{template "copybox" (dict "Text" .LoginRole "Label" "Copy login name")}}
+      {{if eq .Auth "apppw"}}
+      <div class="choice">{{icon "cloud"}}<span><strong>Cloudron app password</strong><small>Create one for {{appDomain}} in your <a href="{{profileURL}}">Cloudron profile</a> and use it with this login. Each works until you delete it there.</small></span></div>
+      <form method="post" action="/roles/{{$r.Name}}/password" class="btns">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <button type="submit" class="ib with-label">{{icon "key-round"}}<span class="lbl">Switch to a generated password</span></button>
+      </form>
+      <p class="small muted">App passwords stop working for this login when you switch.</p>
+      {{else}}
+      <div class="choice">{{icon "key-round"}}<span><strong>Generated password</strong><small>Set {{utc .RotatedAt}}. Only you have it, the other owners have their own logins.</small></span></div>
+      <div class="btns">
+        <form method="post" action="/roles/{{$r.Name}}/password">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <button type="submit" class="ib primary with-label">{{icon "refresh-cw"}}<span class="lbl">New password</span></button>
+        </form>
+        {{if appPasswords}}
+        <form method="post" action="/roles/{{$r.Name}}/apppw">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <button type="submit" class="ib with-label">{{icon "cloud"}}<span class="lbl">Use a Cloudron app password</span></button>
+        </form>
+        {{end}}
+      </div>
+      {{if appPasswords}}<p class="small muted">With a Cloudron app password your generated password stops working right away.</p>{{end}}
+      {{end}}
+      {{else}}
+      <p>You have no login for this role yet. Every owner gets an own login, changing it does not affect the others.</p>
+      <div class="btns">
+        <form method="post" action="/roles/{{$r.Name}}/password">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <button type="submit" class="ib primary with-label">{{icon "key-round"}}<span class="lbl">Create my password</span></button>
+        </form>
+        {{if appPasswords}}
+        <form method="post" action="/roles/{{$r.Name}}/apppw">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <button type="submit" class="ib with-label">{{icon "cloud"}}<span class="lbl">Use a Cloudron app password</span></button>
+        </form>
+        {{end}}
+      </div>
+      {{end}}
+    </section>
+    {{end}}
+    {{if .Admin}}
+    <section>
+      <span class="eyebrow">Owners and limits</span>
+      <form method="post" action="/admin/roles/{{$r.Name}}/update" class="form">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <label class="field"><span>Owners</span>
+          <textarea name="owners" rows="2" data-principals spellcheck="false" placeholder="user:anna, group:developers">{{$r.OwnersText}}</textarea>
+          <span class="help">Cloudron users and groups. Logins of removed owners are deleted within a minute.</span>
+        </label>
+        <label class="field"><span>Connections per login</span><input type="number" name="conn_limit" value="{{$r.ConnLimit}}" min="1" max="1000"></label>
+        <div class="reveal">
+          <label class="switch-row"><span>Owners can create databases<small>Up to the limit below, existing ones count.</small></span><input type="checkbox" class="switch" name="allow_create_db"{{if $r.MaxDatabases}} checked{{end}}></label>
+          <label class="field when-checked"><span>Database limit</span><input type="number" name="max_databases" value="{{if $r.MaxDatabases}}{{$r.MaxDatabases}}{{else}}3{{end}}" min="1" max="100"></label>
+        </div>
+        <div class="btns"><button type="submit" class="ib primary with-label">{{icon "save"}}<span class="lbl">Save</span></button></div>
+      </form>
+    </section>
+    <section>
+      <span class="eyebrow">Logins</span>
+      <ul class="list">
+        {{range $r.Logins}}
+        <li><div class="row-main">
+            <div class="row-title"><span class="mono">{{.LoginRole}}</span></div>
+            <div class="row-sub">{{.Username}} · {{if eq .Auth "apppw"}}Cloudron app password since {{utc .RotatedAt}}{{else}}password set {{utc .RotatedAt}}{{end}}</div>
+          </div>
+          <div class="btns">{{if .Revoked}}<span class="chip">being removed</span>{{else}}
+            <form method="post" action="/admin/roles/{{$r.Name}}/logins/{{.LoginRole}}/revoke">
+              <input type="hidden" name="csrf" value="{{$csrf}}">
+              <button type="submit" class="ib danger" aria-label="Revoke {{.LoginRole}}" data-tip="Revoke {{.LoginRole}}">{{icon "ban"}}<span class="lbl">Revoke</span></button>
+            </form>{{end}}
+          </div>
+        </li>
+        {{else}}
+        <li><span class="muted">No owner has created a login yet.</span></li>
+        {{end}}
+      </ul>
+    </section>
+    <section>
+      <div class="danger-box">
+        <h3>{{icon "trash-2"}} Delete role</h3>
+        <p class="small">Removes the role and all its logins.</p>
+        {{if $r.Databases}}
+        <p class="small muted">Delete its databases first: {{range $i, $d := $r.Databases}}{{if $i}}, {{end}}<a class="mono" href="/databases/{{$d}}">{{$d}}</a>{{end}}.</p>
+        {{else}}
+        <form method="post" action="/admin/roles/{{$r.Name}}/delete" class="form">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          {{template "confirmfield" $r.Name}}
+          <div class="btns"><button type="submit" class="ib danger solid with-label needs-confirm">{{icon "trash-2"}}<span class="lbl">Delete role</span></button></div>
+        </form>
+        {{end}}
+      </div>
+    </section>
+    {{else}}
+    <section>
+      <span class="eyebrow">Owners and limits</span>
+      <div class="meta">{{range $r.Owners}}<span class="chip">{{if eq .Kind "group"}}{{icon "users"}} group {{else}}{{icon "user"}} {{end}}{{.Display}}</span>{{end}}</div>
+      <p class="small muted">{{$r.ConnLimit}} connections per login.{{if $r.MaxDatabases}} Up to {{$r.MaxDatabases}} databases.{{end}}
+      {{if .IsAdmin}}<a href="/admin/roles#sheet-role-{{$r.Name}}">Change in Admin</a>{{else}}Ask an administrator to change owners or limits.{{end}}</p>
+    </section>
+    {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "newdbsheet"}}
+{{$id := print "sheet-newdb-" .R.Name}}
+<div popover id="{{$id}}" class="sheet" aria-labelledby="{{$id}}-title">
+  {{template "sheethead" (dict "ID" $id "Icon" "plus" "Title" "New database in" "Name" .R.Name)}}
+  <div class="sheet-body">
+    <form method="post" action="/roles/{{.R.Name}}/databases" class="form">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label class="field"><span>Name</span>
+        <input type="text" name="name" class="mono" required pattern="[a-z][a-z0-9_]{2,62}" autocomplete="off" spellcheck="false">
+        <span class="help">Lowercase letters, digits and _, 3 to 63 characters.</span>
+      </label>
+      <p class="small muted">{{len .R.Databases}} of {{.R.MaxDatabases}} databases of this role used.</p>
+      <div class="btns"><button type="submit" class="ib primary with-label">{{icon "plus"}}<span class="lbl">Create database</span></button></div>
+    </form>
+  </div>
+</div>
+{{end}}
+
+{{define "kindchip"}}{{if eq . "scheduled"}}<span class="chip">{{icon "clock"}} scheduled</span>{{else if eq . "pre_restore"}}<span class="chip warn">{{icon "rotate-ccw"}} before restore</span>{{else}}<span class="chip accent">{{icon "camera"}} manual</span>{{end}}{{end}}
+
+{{define "snaprow"}}
+{{$s := .S}}
+<li id="snap-{{$s.ID}}"><div class="row-main">
+    <div class="row-title">{{if .ShowDB}}<a class="mono" href="/databases/{{$s.Database}}">{{$s.Database}}</a> {{end}}<span class="mono">#{{$s.ID}}</span> {{utc $s.CreatedAt}} {{template "kindchip" $s.Kind}}</div>
+    <div class="row-sub">{{bytes $s.SizeBytes}} · by {{$s.CreatedBy}}{{with $s.Note}} · {{.}}{{end}}</div>
+  </div>
+  <div class="btns">
+    <button type="button" class="ib" popovertarget="sheet-dl-{{$s.ID}}" aria-label="Download #{{$s.ID}}" data-tip="Download #{{$s.ID}}">{{icon "download"}}<span class="lbl">Download</span></button>
+    <button type="button" class="ib" popovertarget="sheet-restore-{{$s.ID}}" aria-label="Restore #{{$s.ID}}" data-tip="Restore #{{$s.ID}}"{{if .Busy}} disabled{{end}}>{{icon "rotate-ccw"}}<span class="lbl">Restore</span></button>
+    <button type="button" class="ib danger" popovertarget="sheet-delsnap-{{$s.ID}}" aria-label="Delete #{{$s.ID}}" data-tip="Delete #{{$s.ID}}">{{icon "trash-2"}}<span class="lbl">Delete</span></button>
+  </div>
+</li>
+{{end}}
+
+{{define "snapsheets"}}
+{{$s := .S}}
+<div popover id="sheet-dl-{{$s.ID}}" class="sheet" aria-labelledby="sheet-dl-{{$s.ID}}-title">
+  {{template "sheethead" (dict "ID" (print "sheet-dl-" $s.ID) "Icon" "download" "Title" (print "Download #" $s.ID))}}
+  <div class="sheet-body">
+    <section>
+      <a class="choice" href="/snapshots/{{$s.ID}}/download?format=dump" download>{{icon "database"}}<span><strong>.dump</strong><small>Custom format for pg_restore. Smaller, can restore single tables.</small></span></a>
+      <a class="choice" href="/snapshots/{{$s.ID}}/download?format=sql" download>{{icon "file"}}<span><strong>.sql</strong><small>Plain SQL, readable, works with psql.</small></span></a>
+      <p class="small muted">Restore a .dump elsewhere with <span class="mono">pg_restore --no-owner --no-acl -d &lt;database&gt; file.dump</span>, pg_restore 17 or newer.</p>
+    </section>
+  </div>
+</div>
+<div popover id="sheet-restore-{{$s.ID}}" class="sheet" aria-labelledby="sheet-restore-{{$s.ID}}-title">
+  {{template "sheethead" (dict "ID" (print "sheet-restore-" $s.ID) "Icon" "rotate-ccw" "Title" (print "Restore #" $s.ID))}}
+  <div class="sheet-body">
+    <form method="post" action="/snapshots/{{$s.ID}}/restore" class="form">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="callout warn">{{icon "triangle-alert"}}<span>Replaces all data in <span class="mono">{{$s.Database}}</span> with the state of {{utc $s.CreatedAt}}. Its clients are disconnected.</span></div>
+      <label class="switch-row"><span>Take a snapshot of the current data first<small>Lets you go back.</small></span><input type="checkbox" class="switch" name="safety_snapshot" checked></label>
+      {{template "confirmfield" $s.Database}}
+      <div class="btns"><button type="submit" class="ib danger solid with-label needs-confirm">{{icon "rotate-ccw"}}<span class="lbl">Restore snapshot</span></button></div>
+    </form>
+  </div>
+</div>
+<div popover id="sheet-delsnap-{{$s.ID}}" class="sheet" aria-labelledby="sheet-delsnap-{{$s.ID}}-title">
+  {{template "sheethead" (dict "ID" (print "sheet-delsnap-" $s.ID) "Icon" "trash-2" "Title" (print "Delete #" $s.ID))}}
+  <div class="sheet-body">
+    <form method="post" action="/snapshots/{{$s.ID}}/delete" class="form">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="next" value="{{.Next}}">
+      <p>Snapshot #{{$s.ID}} of <span class="mono">{{$s.Database}}</span> from {{utc $s.CreatedAt}}, {{bytes $s.SizeBytes}}. This cannot be undone.</p>
+      <div class="btns"><button type="submit" class="ib danger solid with-label">{{icon "trash-2"}}<span class="lbl">Delete snapshot</span></button></div>
+    </form>
+  </div>
+</div>
+{{end}}
+
+{{define "jobcard"}}
+<div class="job" id="job">
+  <div class="job-top"><strong id="job-title">{{jobTitle .}}</strong><span class="live">Live</span></div>
+  <progress id="job-bar" max="100"{{with .Progress}} value="{{.}}"{{end}} aria-labelledby="job-title"></progress>
+  <div class="small"><span id="job-step">{{if .Step}}{{.Step}}{{else}}Waiting for the worker{{end}}</span><span id="job-pct">{{with .Progress}} · {{.}}%{{end}}</span></div>
+  <div class="small muted">{{with .StartedAt}}Started {{utc .}}{{else}}Queued {{utc $.CreatedAt}}{{end}} by {{.RequestedBy}}. <span class="no-js">Reload the page to see the progress.</span></div>
+</div>
+{{end}}
