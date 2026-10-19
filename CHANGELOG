@@ -1,3 +1,10 @@
+[1.4.0]
+* New panel design: icon buttons with optional labels, settings in sheets, a bottom navigation bar on phones
+* Snapshot, restore and import progress updates live, without reloading the page
+* Failure mails are opt-in: each user turns them on in the account settings. Owners no longer get them automatically
+* Admins can change selected PostgreSQL settings (max_connections, memory and timeouts) in Admin > Server
+* Admin overview links to lists of all client connections and all snapshots
+
 [1.3.0]
 * Logins can use Cloudron app passwords instead of a generated password, created in the Cloudron profile (needs Cloudron 10.0.5 or newer)
 * Copy buttons next to connection URLs and new passwords
