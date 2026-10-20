@@ -134,7 +134,13 @@ wait_healthy
 readonly app_ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"${net}\").IPAddress}}" "${app}")
 expect "env.sh created on first start" "PG_MAX_SNAPSHOTS=7" "$(docker exec "${app}" cat /app/data/env.sh)"
 expect "no remote access before allowlist" "rejects connection" "$(pg x e2e_bob e2e_bob 'select 1')"
+expect "no admin group by default" '^export PG_ADMIN_GROUP=""$' "$(docker exec "${app}" grep PG_ADMIN_GROUP= /app/data/env.sh)"
+browser noAdminGroup
 
+echo "==> Several admin groups in PG_ADMIN_GROUP"
+docker exec "${app}" sed -i 's/^export PG_ADMIN_GROUP=.*/export PG_ADMIN_GROUP="dba, postgres-admins"/' /app/data/env.sh
+docker restart "${app}" >/dev/null
+wait_healthy
 browser admin
 expect "test mail delivered" "^1$" "$(mails dba@example.test 'PostgreSQL: test mail')"
 
@@ -359,6 +365,7 @@ for _ in $(seq 1 60); do
 done
 browser bob3
 browser eve
+superuser "insert into audit_log (actor, action, target) select 'e2e', 'pager.test', 'row ' || i from generate_series(1, 60) i" pgpanel >/dev/null
 browser admin2
 
 echo "==> Snapshot file permissions"

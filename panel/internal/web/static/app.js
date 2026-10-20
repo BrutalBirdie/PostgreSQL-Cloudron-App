@@ -38,6 +38,34 @@
             input.addEventListener('input', update);
             update();
         });
+        // role and database names, same rules as internal/names
+        root.querySelectorAll('input[data-name]').forEach(function (input) {
+            const help = document.getElementById(input.getAttribute('aria-describedby'));
+            const reserved = input.dataset.reserved.split(' ');
+            const prefixes = input.dataset.reservedPrefixes.split(' ');
+            input.addEventListener('input', function () {
+                const fixed = input.value.toLowerCase().replace(/[ -]/g, '_');
+                if (fixed !== input.value) {
+                    const pos = input.selectionStart;
+                    input.value = fixed;
+                    input.setSelectionRange(pos, pos);
+                }
+                const v = input.value;
+                const bad = v.match(/[^a-z0-9_]/);
+                const prefix = prefixes.find((p) => v.startsWith(p));
+                let msg = '';
+                if (v === '') msg = '';
+                else if (/^[0-9]/.test(v)) msg = 'Start with a letter. A name that starts with a digit needs quotes in every SQL statement.';
+                else if (!/^[a-z]/.test(v)) msg = 'Start with a letter a-z.';
+                else if (bad) msg = `"${bad[0]}" is not allowed. Use a-z, 0-9 and _.`;
+                else if (v.length < 3) msg = 'At least 3 characters.';
+                else if (reserved.includes(v)) msg = `${v} is reserved.`;
+                else if (prefix) msg = `Names starting with ${prefix} are reserved.`;
+                input.setCustomValidity(msg);
+                help.textContent = msg || help.dataset.default;
+                help.classList.toggle('error', msg !== '');
+            });
+        });
         root.querySelectorAll('form[data-schedule]').forEach(function (form) {
             const cron = form.elements.cron;
             form.querySelectorAll('input[name=preset]').forEach(function (radio) {

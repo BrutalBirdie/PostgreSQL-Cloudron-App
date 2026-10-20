@@ -1,6 +1,6 @@
 Remote connections are blocked until you allow a network.
 
-1. Make yourself an admin: set `PG_ADMINS="<your username>"` in `/app/data/env.sh` and restart the app, or add yourself to a Cloudron group named `postgres-admins`.
+1. Make yourself an admin: set `PG_ADMINS="<your username>"` in `/app/data/env.sh` and restart the app. To make the members of Cloudron groups admins, list the groups in `PG_ADMIN_GROUP`, separated by commas.
 2. Open the app, sign in, and go to **Admin**.
 3. Add the IP address of your client server under **Admin > Network**.
 4. Create a role under **Admin > Roles** and choose its owners (Cloudron users and groups).

@@ -29,6 +29,7 @@ type Param struct {
 	min     func(memMB int64) int64
 	max     func(memMB int64) int64
 	def     func(memMB int64) string
+	defNote string // explains a computed or special default, shown after it
 }
 
 func fixed(n int64) func(int64) int64 { return func(int64) int64 { return n } }
@@ -42,21 +43,21 @@ var Params = []Param{
 	{Name: "max_connections", Kind: Integer, Restart: true, min: fixed(20), max: fixed(2000), def: text("100"),
 		Help: "Upper limit for all connections together. The connection limits of the roles should add up to less."},
 	{Name: "shared_buffers", Kind: Memory, Restart: true, min: fixed(16 * 1024), max: func(m int64) int64 { return m * 1024 * 3 / 4 },
-		def:  func(m int64) string { return fmt.Sprintf("%dMB, a quarter of the app memory", m/4) },
+		def: func(m int64) string { return fmt.Sprintf("%dMB", m/4) }, defNote: "a quarter of the app memory",
 		Help: "Cache shared by all connections. Empty follows the memory limit of the app."},
 	{Name: "effective_cache_size", Kind: Memory, min: fixed(64 * 1024), max: fixed(1 << 30),
-		def:  func(m int64) string { return fmt.Sprintf("%dMB, half of the app memory", m/2) },
+		def: func(m int64) string { return fmt.Sprintf("%dMB", m/2) }, defNote: "half of the app memory",
 		Help: "Planner hint for the memory available for caching, allocates nothing."},
 	{Name: "maintenance_work_mem", Kind: Memory, min: fixed(1024), max: ofMemory(2),
-		def:  func(m int64) string { return fmt.Sprintf("%dMB, a sixteenth of the app memory", m/16) },
+		def: func(m int64) string { return fmt.Sprintf("%dMB", m/16) }, defNote: "a sixteenth of the app memory",
 		Help: "Memory for VACUUM, CREATE INDEX and the index builds of restores and imports."},
 	{Name: "work_mem", Kind: Memory, min: fixed(64), max: ofMemory(4), def: text("4MB"),
 		Help: "Memory per sort or hash step. One query can use it several times."},
-	{Name: "statement_timeout", Kind: Duration, min: fixed(0), max: fixed(24 * 3600 * 1000), def: text("0, off"),
+	{Name: "statement_timeout", Kind: Duration, min: fixed(0), max: fixed(24 * 3600 * 1000), def: text("0"), defNote: "off",
 		Help: "Cancels statements that run longer. Snapshots, restores and imports are not affected."},
-	{Name: "idle_in_transaction_session_timeout", Kind: Duration, min: fixed(0), max: fixed(7 * 24 * 3600 * 1000), def: text("0, off"),
+	{Name: "idle_in_transaction_session_timeout", Kind: Duration, min: fixed(0), max: fixed(7 * 24 * 3600 * 1000), def: text("0"), defNote: "off",
 		Help: "Ends sessions that keep a transaction open without doing anything."},
-	{Name: "idle_session_timeout", Kind: Duration, min: fixed(0), max: fixed(7 * 24 * 3600 * 1000), def: text("0, off"),
+	{Name: "idle_session_timeout", Kind: Duration, min: fixed(0), max: fixed(7 * 24 * 3600 * 1000), def: text("0"), defNote: "off",
 		Help: "Ends idle sessions. Breaks connection pools that keep idle connections open."},
 }
 
@@ -77,7 +78,16 @@ func Names() []string {
 	return out
 }
 
+// Default is the value used when the field is empty.
 func (p Param) Default(memMB int64) string { return p.def(memMB) }
+
+// DefaultHint is Default with its explanation, for the form hint.
+func (p Param) DefaultHint(memMB int64) string {
+	if p.defNote == "" {
+		return p.def(memMB)
+	}
+	return p.def(memMB) + ", " + p.defNote
+}
 
 // Range describes the allowed values for the form hint.
 func (p Param) Range(memMB int64) string {

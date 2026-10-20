@@ -15,7 +15,7 @@
   "memoryLimit": 1073741824,
   "checklist": {
     "create-admin-group": {
-      "message": "Set admins: add Cloudron usernames to PG_ADMINS in /app/data/env.sh, or add users to a Cloudron group named postgres-admins. Restart the app after editing env.sh."
+      "message": "Set admins: add Cloudron usernames to PG_ADMINS or Cloudron groups to PG_ADMIN_GROUP in /app/data/env.sh. Restart the app after editing env.sh."
     }
   },
   "tcpPorts": {

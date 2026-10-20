@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"pgpanel/internal/names"
 	"pgpanel/internal/store"
 )
 
@@ -52,6 +53,15 @@ var viewFuncs = template.FuncMap{
 		return "manual"
 	},
 	"duration": func(t time.Time) string { return since(time.Since(t)) },
+	"add":      func(a, b int) int { return a + b },
+	"reservedNames": func() string {
+		list, _ := names.Reserved()
+		return strings.Join(list, " ")
+	},
+	"reservedPrefixes": func() string {
+		_, prefixes := names.Reserved()
+		return strings.Join(prefixes, " ")
+	},
 }
 
 func ago(t time.Time) string {

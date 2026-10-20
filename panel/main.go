@@ -70,7 +70,7 @@ func splitList(s string) []string {
 }
 
 func admins() access.Admins {
-	return access.Admins{Users: splitList(os.Getenv("PG_ADMINS")), Groups: splitList(env("PG_ADMIN_GROUP", "postgres-admins"))}
+	return access.Admins{Users: splitList(os.Getenv("PG_ADMINS")), Groups: splitList(os.Getenv("PG_ADMIN_GROUP"))}
 }
 
 func maxSnapshots() int {

@@ -100,10 +100,19 @@ async function uploadFile(page, file, userSum = '') {
 }
 
 const steps = {
+    async noAdminGroup() {
+        const { page } = await session('ann');
+        await login(page, 'ann', ['postgres-admins']);
+        check('no admin group by default', (await page.goto(BASE + '/admin')).status() === 403);
+    },
+
     async admin() {
         const { page, save } = await session('ann');
         await login(page, 'ann', ['postgres-admins']);
         check('admin sees Admin link', await page.getByRole('link', { name: 'Admin', exact: true }).isVisible());
+        await page.hover('.topbar .avatar');
+        const tipTop = await page.locator('.topbar .avatar').evaluate((a) => a.getBoundingClientRect().bottom <= a.getBoundingClientRect().top + parseFloat(getComputedStyle(a, '::after').top));
+        check('account tooltip below the avatar', tipTop);
 
         const res = await page.goto(BASE + '/admin');
         check('admin page loads', res.status() === 200, String(res.status()));
@@ -138,7 +147,18 @@ const steps = {
 
         await page.goto(BASE + '/admin/roles');
         const form = await sheet(page, 'sheet-newrole');
-        await form.locator('input[name=name]').fill('e2e_bob');
+        const nameInput = form.locator('input[name=name]');
+        const nameHelp = form.locator('#sheet-newrole-help');
+        await nameInput.fill('Role2DB');
+        check('capitals in names become lowercase', (await nameInput.inputValue()) === 'role2db' && (await nameInput.evaluate((i) => i.validity.valid)));
+        await nameInput.fill('2db');
+        check('name starting with a digit explained', (await nameHelp.textContent()).includes('Start with a letter') && (await nameInput.evaluate((i) => i.validationMessage)).includes('Start with a letter'));
+        await nameInput.fill('pg_x');
+        check('reserved prefix explained', (await nameHelp.textContent()).includes('pg_ are reserved'));
+        await nameInput.fill('template1');
+        check('reserved name explained', (await nameHelp.textContent()).includes('template1 is reserved'));
+        await nameInput.fill('e2e_bob');
+        check('valid name restores the hint', (await nameHelp.textContent()).includes('3 to 63 characters') && (await nameInput.evaluate((i) => i.validity.valid)));
         const search = form.locator('.principals input');
         check('owner picker replaces the text field', (await search.count()) === 1 && !(await form.locator('textarea[name=owners]').isVisible()));
         await search.fill('bbld'); // fuzzy: "Bob Builder"
@@ -192,6 +212,8 @@ const steps = {
         check('server tab lists the parameters', (await page.locator('.param').count()) === 8);
         check('running value shown', (await page.locator('.param', { hasText: 'max_connections' }).textContent()).includes('running 100'));
         check('managed parameters explained', (await page.content()).includes('log_min_duration_statement'));
+        check('empty field shows the default value', (await page.getAttribute('input[name=max_connections]', 'placeholder')) === 'default: 100');
+        check('computed default shown as a value', /^default: \d+MB$/.test(await page.getAttribute('input[name=shared_buffers]', 'placeholder')));
         await page.fill('input[name=work_mem]', '1TB');
         await page.click('form[action="/admin/server"] button[type=submit]');
         check('out of range value rejected', (await page.content()).includes('work_mem must be between'));
@@ -414,7 +436,9 @@ const steps = {
             const ctx = await browser.newContext({ storageState: `/work/${user}.json`, viewport: { width, height } });
             const page = await ctx.newPage();
             await page.goto(BASE + url);
-            await page.screenshot({ path: `/work/shots/${name}.png`, fullPage: true });
+            // fullPage keeps position: fixed elements (the phone tab bar) at the original viewport bottom
+            await page.setViewportSize({ width, height: Math.max(height, await page.evaluate(() => document.documentElement.scrollHeight)) });
+            await page.screenshot({ path: `/work/shots/${name}.png` });
             await ctx.close();
         }
         check('screenshots written', fs.readdirSync('/work/shots').length === 4);
@@ -428,6 +452,14 @@ const steps = {
         await page.getByRole('link', { name: 'Uploads' }).click();
         await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
         check('role picker shows the current role', (await page.locator('.pills a[aria-current=page]').textContent()) === 'e2e_bob');
+        await page.setViewportSize({ width: 390, height: 844 });
+        const overflow = await page.locator('form.drop').evaluate((f) => {
+            const box = f.getBoundingClientRect();
+            return [...f.querySelectorAll('*')].filter((e) => e.getClientRects().length && e.getBoundingClientRect().right > box.right + 1).map((e) => e.tagName);
+        });
+        check('upload form fits on phones', overflow.length === 0, overflow.join(','));
+        check('no horizontal page scroll on the upload page', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+        await page.setViewportSize({ width: 1280, height: 800 });
 
         await uploadFile(page, dump);
         await page.waitForURL(BASE + '/roles/e2e_bob/uploads');
@@ -629,11 +661,25 @@ const steps = {
         await role.getByRole('button', { name: 'Delete role' }).click();
         await page.waitForURL(BASE + '/admin/roles');
         check('role deleted', (await page.locator('#sheet-role-e2e_eve').count()) === 0);
-        await page.goto(BASE + '/admin/audit');
-        const audit = await page.content();
         for (const action of ['role.create', 'database.create', 'snapshot.restore', 'schedule.set', 'database.drop', 'role.drop', 'allowlist.update', 'server.params', 'account.prefs']) {
-            check(`audit has ${action}`, audit.includes(action));
+            await page.goto(BASE + '/admin/audit?q=' + action);
+            check(`audit has ${action}`, (await page.locator('main .list .row-title', { hasText: action }).count()) > 0);
         }
+        await page.goto(BASE + '/admin/audit');
+        await page.fill('input[name=q]', 'e2e_eve');
+        await page.click('form.search button');
+        let targets = await page.locator('main .list .row-main').allTextContents();
+        check('audit search filters entries', targets.length > 0 && targets.every((t) => t.includes('e2e_eve')), targets.length);
+        await page.locator('.pills a', { hasText: /^role$/ }).click();
+        check('audit category keeps the search', new URL(page.url()).searchParams.get('q') === 'e2e_eve');
+        const actions = await page.locator('main .list .row-title').allTextContents();
+        check('audit filtered by category', actions.length > 0 && actions.every((a) => a.startsWith('role.')), actions.join(','));
+        await page.goto(BASE + '/admin/audit?q=pager.test');
+        check('audit pages', (await page.locator('main .list > li').count()) === 50 && (await page.locator('.pager a[rel=next]').count()) === 1);
+        await page.click('.pager a[rel=next]');
+        check('second audit page', (await page.locator('main .list > li').count()) === 10 && (await page.locator('.pager a[rel=prev]').count()) === 1 && (await page.locator('.pager a[rel=next]').count()) === 0);
+        await page.goto(BASE + '/admin/audit?q=100%25');
+        check('audit search treats % literally', (await page.locator('main .list').textContent()).includes('No entries match'));
         await (await sheet(page, 'sheet-account')).getByRole('button', { name: 'Log out' }).click();
         await page.waitForURL(BASE + '/');
         check('logout shows login page', (await page.content()).includes('Sign in with Cloudron'));

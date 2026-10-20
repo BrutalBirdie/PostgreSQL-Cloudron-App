@@ -73,7 +73,7 @@
   <div class="sheet-body">
     <form method="post" action="/admin/roles" class="form">
       <input type="hidden" name="csrf" value="{{$csrf}}">
-      <label class="field"><span>Name</span><input type="text" name="name" class="mono" required pattern="[a-z][a-z0-9_]{2,62}" autocomplete="off" spellcheck="false"></label>
+      {{template "namefield" "sheet-newrole"}}
       <label class="field"><span>Owners</span>
         <textarea name="owners" rows="2" data-principals spellcheck="false" placeholder="user:anna, group:developers"></textarea>
         <span class="help">Each owner creates an own login in the role settings. Group members have access while they are in the group.</span>
@@ -110,10 +110,7 @@
   <div class="sheet-body">
     <form method="post" action="/admin/databases" class="form">
       <input type="hidden" name="csrf" value="{{$csrf}}">
-      <label class="field"><span>Name</span>
-        <input type="text" name="name" class="mono" required pattern="[a-z][a-z0-9_]{2,62}" autocomplete="off" spellcheck="false">
-        <span class="help">Lowercase letters, digits and _, 3 to 63 characters.</span>
-      </label>
+      {{template "namefield" "sheet-newdb"}}
       <label class="field"><span>Owner role</span>
         <select name="owner">{{range $d.Roles}}<option value="{{.Name}}">{{.Name}}</option>{{end}}</select>
         <span class="help">Admins can add a database to any role, the role's database limit does not apply.</span>
@@ -168,8 +165,8 @@
     {{range $d.Params}}
     <div class="param">
       <label class="name" for="p-{{.Name}}">{{.Name}}</label>
-      <input type="text" id="p-{{.Name}}" name="{{.Name}}" class="mono" value="{{.Value}}" placeholder="default" spellcheck="false" autocomplete="off">
-      <span class="row-sub">{{.Help}} Default {{.Default}}. Allowed {{.Range}}.</span>
+      <input type="text" id="p-{{.Name}}" name="{{.Name}}" class="mono" value="{{.Value}}" placeholder="default: {{.Default}}" spellcheck="false" autocomplete="off">
+      <span class="row-sub">{{.Help}} Default {{.DefaultHint}}. Allowed {{.Range}}.</span>
       <div class="meta">
         {{if .Restart}}<span class="chip warn">{{icon "triangle-alert"}} needs app restart</span>{{else}}<span class="chip ok">{{icon "refresh-cw"}} applies within seconds</span>{{end}}
         <span class="chip">running {{.Running}}</span>
@@ -195,6 +192,14 @@
 </section>
 
 {{else if eq $d.View "audit"}}
+<form method="get" action="/admin/audit" class="search" role="search">
+  {{with $d.Filter}}<input type="hidden" name="f" value="{{.}}">{{end}}
+  <input type="search" name="q" value="{{$d.Search}}" placeholder="Search actor, action, target, detail" aria-label="Search the audit log" autocomplete="off" spellcheck="false">
+  <button type="submit" class="ib" aria-label="Search">{{icon "search"}}</button>
+</form>
+<nav class="pills" aria-label="Filter">
+  {{range $d.Filters}}<a href="/admin/audit?f={{.Value}}{{with $d.Search}}&amp;q={{.}}{{end}}"{{if eq .Value $d.Filter}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}
+</nav>
 <section class="card">
   <ul class="list">
     {{range $d.Audit}}
@@ -203,10 +208,17 @@
         <div class="row-sub">{{utc .At}} · {{.Actor}}{{with .Detail}} · <span class="mono wrap">{{.}}</span>{{end}}</div>
       </div></li>
     {{else}}
-    <li><span class="muted">No entries.</span></li>
+    <li><span class="muted">No entries{{if or $d.Search $d.Filter}} match{{end}}.</span></li>
     {{end}}
   </ul>
 </section>
+{{if or (gt $d.Page 1) $d.MorePages}}
+<nav class="pager" aria-label="Pages">
+  {{if gt $d.Page 1}}<a class="ib with-label" href="/admin/audit?f={{$d.Filter}}&amp;q={{$d.Search}}&amp;p={{add $d.Page -1}}" rel="prev">{{icon "chevron-left"}}<span class="lbl">Newer</span></a>{{else}}<span></span>{{end}}
+  <span class="small muted">Page {{$d.Page}}</span>
+  {{if $d.MorePages}}<a class="ib with-label" href="/admin/audit?f={{$d.Filter}}&amp;q={{$d.Search}}&amp;p={{add $d.Page 1}}" rel="next"><span class="lbl">Older</span>{{icon "chevron-right"}}</a>{{else}}<span></span>{{end}}
+</nav>
+{{end}}
 {{end}}
 {{end}}
 

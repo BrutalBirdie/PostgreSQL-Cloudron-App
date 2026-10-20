@@ -16,6 +16,14 @@
 <div class="url"><code>{{.Text}}</code><button type="button" class="ib quiet copy" data-copy="{{.Text}}" aria-label="{{.Label}}" data-tip="{{.Label}}" hidden>{{icon "copy"}}<span class="lbl">Copy</span></button></div>
 {{end}}
 
+{{define "namefield"}}
+<label class="field"><span>Name</span>
+  <input type="text" name="name" class="mono" required pattern="[a-z][a-z0-9_]{2,62}" maxlength="63" data-name data-reserved="{{reservedNames}}" data-reserved-prefixes="{{reservedPrefixes}}"
+    title="3 to 63 characters: a-z, 0-9 and _, starting with a letter" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="{{.}}-help">
+  <span class="help" id="{{.}}-help" data-default="a-z, 0-9 and _, 3 to 63 characters, starting with a letter. Capitals become lowercase, as in SQL without quotes.">a-z, 0-9 and _, 3 to 63 characters, starting with a letter. Capitals become lowercase, as in SQL without quotes.</span>
+</label>
+{{end}}
+
 {{define "confirmfield"}}
 <label class="field"><span class="small">Type <span class="mono">{{.}}</span> to confirm</span>
   <input type="text" name="confirm" class="mono" required pattern="{{.}}" data-confirm="{{.}}" autocomplete="off" spellcheck="false">
@@ -143,10 +151,7 @@
   <div class="sheet-body">
     <form method="post" action="/roles/{{.R.Name}}/databases" class="form">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <label class="field"><span>Name</span>
-        <input type="text" name="name" class="mono" required pattern="[a-z][a-z0-9_]{2,62}" autocomplete="off" spellcheck="false">
-        <span class="help">Lowercase letters, digits and _, 3 to 63 characters.</span>
-      </label>
+      {{template "namefield" $id}}
       <p class="small muted">{{len .R.Databases}} of {{.R.MaxDatabases}} databases of this role used.</p>
       <div class="btns"><button type="submit" class="ib primary with-label">{{icon "plus"}}<span class="lbl">Create database</span></button></div>
     </form>

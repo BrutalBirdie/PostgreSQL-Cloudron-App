@@ -154,8 +154,20 @@ func (s *Store) Audit(ctx context.Context, e AuditEntry) error {
 	return err
 }
 
-func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
-	rows, err := s.pool.Query(ctx, `SELECT at, actor, action, target, detail FROM audit_log ORDER BY id DESC LIMIT $1`, limit)
+// AuditQuery filters the audit log. Category is the part of the action
+// before the dot, Search matches any column as a substring.
+type AuditQuery struct {
+	Category, Search string
+	Limit, Offset    int
+}
+
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func (s *Store) ListAudit(ctx context.Context, q AuditQuery) ([]AuditEntry, error) {
+	rows, err := s.pool.Query(ctx, `SELECT at, actor, action, target, detail FROM audit_log
+		WHERE ($1 = '' OR split_part(action, '.', 1) = $1)
+		  AND ($2 = '' OR concat_ws(' ', actor, action, target, detail) ILIKE '%' || $2 || '%')
+		ORDER BY id DESC LIMIT $3 OFFSET $4`, q.Category, likeEscaper.Replace(q.Search), q.Limit, q.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +176,14 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) 
 		err := r.Scan(&e.At, &e.Actor, &e.Action, &e.Target, &e.Detail)
 		return e, err
 	})
+}
+
+func (s *Store) AuditCategories(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT split_part(action, '.', 1) AS c FROM audit_log ORDER BY c`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
 type Role struct {

@@ -3,6 +3,7 @@ package names
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -15,6 +16,15 @@ var reserved = map[string]bool{
 	"template0": true,
 	"template1": true,
 	"public":    true,
+}
+
+// Reserved lists the reserved names and prefixes for the form hints.
+func Reserved() (list, prefixes []string) {
+	for n := range reserved {
+		list = append(list, n)
+	}
+	slices.Sort(list)
+	return list, []string{"pg_", "pgpanel_"}
 }
 
 var ErrInvalid = errors.New("use 3 to 63 characters a-z, 0-9 and _, starting with a letter")
