@@ -1,3 +1,10 @@
+[1.5.0]
+* Audit log has a search, a filter by type and pages
+* Admin groups are set with PG_ADMIN_GROUP in /app/data/env.sh, one or more groups separated by commas. New installs have no admin group, existing installs keep postgres-admins
+* Name fields explain the allowed characters and why a name is not accepted, capitals become lowercase
+* Admin > Server shows the default value of each empty setting
+* Fixed the upload form layout on phones and the account tooltip in the top bar
+
 [1.4.0]
 * New panel design: icon buttons with optional labels, settings in sheets, a bottom navigation bar on phones
 * Snapshot, restore and import progress updates live, without reloading the page
