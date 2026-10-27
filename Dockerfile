@@ -1,4 +1,4 @@
-FROM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS panel
+FROM golang:1.27.3-trixie@sha256:c124b9ad3452f46061b5054607d26ea51730dae5372c5e469920063ba2bc6dcc AS panel
 
 WORKDIR /src
 COPY panel/go.mod panel/go.sum ./
