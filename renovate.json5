@@ -1,0 +1,44 @@
+{
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "extends": [
+        "config:recommended",
+        // picks up the `# renovate:` annotated ARGs in the Dockerfile
+        "customManagers:dockerfileVersions"
+    ],
+    "assignees": ["BrutalBirdie"],
+    "commitBody": "Co-authored-by: BrutalBirdie <20840012+BrutalBirdie@users.noreply.github.com>",
+    "assignAutomerge": true,
+    "automerge": true,
+    // GitHub auto-merge needs branch protection, which would block the release workflows pushing to master
+    "platformAutomerge": false,
+    // config:recommended ignores **/test/**, which holds the Playwright versions
+    "ignorePaths": ["**/node_modules/**"],
+    "customManagers": [
+        {
+            "customType": "regex",
+            "managerFilePatterns": ["test/e2e/run.sh"],
+            "matchStrings": ["(?<depName>mcr\\.microsoft\\.com/playwright):(?<currentValue>v[0-9.]+-noble)"],
+            "datasourceTemplate": "docker"
+        }
+    ],
+    "packageRules": [
+        {
+            "matchUpdateTypes": ["major"],
+            "automerge": false
+        },
+        {
+            // the base image is Ubuntu 26.04, point releases land in -updates and -security
+            "matchDatasources": ["deb"],
+            "registryUrls": [
+                "https://archive.ubuntu.com/ubuntu?suite=resolute&components=main&binaryArch=amd64",
+                "https://archive.ubuntu.com/ubuntu?suite=resolute-updates&components=main&binaryArch=amd64",
+                "https://archive.ubuntu.com/ubuntu?suite=resolute-security&components=main&binaryArch=amd64"
+            ]
+        },
+        {
+            // the npm package must match the browsers in the image
+            "matchPackageNames": ["playwright", "mcr.microsoft.com/playwright"],
+            "groupName": "Playwright"
+        }
+    ]
+}

@@ -1,0 +1,32 @@
+name: renovate
+
+on:
+  schedule:
+    - cron: "22 8 * * *"
+  workflow_dispatch:
+  # Renovate only merges during a run, so start one as soon as the PR checks pass
+  workflow_run:
+    workflows:
+      - release
+    types:
+      - completed
+
+concurrency:
+  group: renovate
+
+jobs:
+  renovate:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'renovate/'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RENOVATE_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_PRIVATE_KEY }}
+
+      - uses: renovatebot/github-action@2804199d260ad00c1fae0e9e842888369391c776 # v46.3.10
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
