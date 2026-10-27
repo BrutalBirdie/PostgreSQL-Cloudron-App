@@ -1,3 +1,6 @@
+[1.5.2]
+* Update golang Docker tag to v1.27.3
+
 [1.5.1]
 * Update cloudron/base Docker tag to v6.0.1
 
