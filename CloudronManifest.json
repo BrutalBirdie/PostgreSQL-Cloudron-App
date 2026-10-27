@@ -4,7 +4,7 @@
   "author": "PostgreSQL Global Development Group",
   "description": "file://DESCRIPTION.md",
   "tagline": "Standalone PostgreSQL server reachable from external hosts",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "upstreamVersion": "18.6",
   "minBoxVersion": "10.0.1",
   "website": "https://www.postgresql.org/",

@@ -1,3 +1,6 @@
+[1.5.1]
+* Update cloudron/base Docker tag to v6.0.1
+
 [1.5.0]
 * Audit log has a search, a filter by type and pages
 * Admin groups are set with PG_ADMIN_GROUP in /app/data/env.sh, one or more groups separated by commas. New installs have no admin group, existing installs keep postgres-admins
