@@ -47,7 +47,7 @@ expect() { # expect <name> <regex> <output>
 
 browser() {
     docker run --rm --network "container:${app}" -u "$(id -u):$(id -g)" -e HOME=/tmp -e APP_IP="${app_ip}" -v "${PWD}:/e2e" -v "${work}:/work" -w /e2e \
-        mcr.microsoft.com/playwright:v1.63.0-noble node e2e.mjs "$1" || failures=$((failures + 1))
+        mcr.microsoft.com/playwright:v1.64.1-noble node e2e.mjs "$1" || failures=$((failures + 1))
 }
 
 pg() { # pg <password> <user> <database> <sql> [extra conninfo]
@@ -82,7 +82,7 @@ app_run() {
 
 echo "==> Building"
 docker build -q -t "${img}" "${root}" >/dev/null
-docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "${PWD}:/e2e" -w /e2e mcr.microsoft.com/playwright:v1.63.0-noble npm install --no-audit --no-fund --silent
+docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "${PWD}:/e2e" -w /e2e mcr.microsoft.com/playwright:v1.64.1-noble npm install --no-audit --no-fund --silent
 
 mkdir -p "${work}/certs"
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "${work}/certs/tls_key.pem" -out "${work}/certs/tls_cert.pem" -days 2 \
@@ -110,9 +110,9 @@ EOF
 }
 scim_users '["g-team"]'
 docker run -d --name "${scim}" --network "${net}" -e SCIM_TOKEN=scimtoken -v "${PWD}:/e2e:ro" -v "${work}:/work:ro" -w /e2e \
-    mcr.microsoft.com/playwright:v1.63.0-noble node scim-mock.mjs >/dev/null
+    mcr.microsoft.com/playwright:v1.64.1-noble node scim-mock.mjs >/dev/null
 docker run -d --name "${smtp}" --network "${net}" --network-alias mail.test -u "$(id -u):$(id -g)" -v "${PWD}:/e2e:ro" -v "${work}:/work" -w /e2e \
-    mcr.microsoft.com/playwright:v1.63.0-noble node smtp-mock.mjs >/dev/null
+    mcr.microsoft.com/playwright:v1.64.1-noble node smtp-mock.mjs >/dev/null
 
 mails() { # mails <recipient> <subject regex>: number of matching messages
     grep -lE "^Subject: $2" "${work}"/mail/*-"$1".eml 2>/dev/null | wc -l
