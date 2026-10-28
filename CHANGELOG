@@ -1,3 +1,6 @@
+[1.5.3]
+* Update golang:1.27.3-trixie Docker digest to 7b072c5
+
 [1.5.2]
 * Update golang Docker tag to v1.27.3
 
