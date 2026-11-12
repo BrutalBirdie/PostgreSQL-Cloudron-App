@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/oauth2 v0.38.0
 )
