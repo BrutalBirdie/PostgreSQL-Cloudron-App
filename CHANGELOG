@@ -1,3 +1,6 @@
+[1.5.11]
+* Update golang:1.27.4-trixie Docker digest to f18c3d7
+
 [1.5.10]
 * Update module github.com/jackc/pgx/v5 to v5.13.0
 
